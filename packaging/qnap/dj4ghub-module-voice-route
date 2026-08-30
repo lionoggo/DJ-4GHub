@@ -18,7 +18,31 @@ adb_cmd() {
 }
 
 module_shell() {
-    adb_cmd shell "$1"
+    # The QDC507's legacy adbd implements the old shell protocol, whose USB
+    # reply is successful even when the remote command itself failed. Carry a
+    # terminal status marker in stdout so every preparation check fails closed.
+    command=$1
+    output=$(adb_cmd shell "{ $command; }; dj4_status=\$?; printf '\\n__DJ4_STATUS_%s__\\n' \"\$dj4_status\"") || {
+        echo 'ADB shell transport failed' >&2
+        return 70
+    }
+    clean=$(printf '%s\n' "$output" | tr -d '\r' | sed '/__DJ4_STATUS_[0-9][0-9]*__/d')
+    status=$(printf '%s\n' "$output" | tr -d '\r' | sed -n 's/.*__DJ4_STATUS_\([0-9][0-9]*\)__/.\1/p' | tail -n 1 | sed 's/^\.//')
+    case "$status" in
+        ''|*[!0-9]*)
+            test -z "$clean" || printf '%s\n' "$clean" >&2
+            echo 'module shell did not return an execution status' >&2
+            return 71
+            ;;
+        0)
+            test -z "$clean" || printf '%s\n' "$clean"
+            return 0
+            ;;
+        *)
+            test -z "$clean" || printf '%s\n' "$clean" >&2
+            return "$status"
+            ;;
+    esac
 }
 
 require_module() {
