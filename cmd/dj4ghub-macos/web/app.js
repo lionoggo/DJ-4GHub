@@ -1295,6 +1295,20 @@ function syncPromptSourceUI() {
     : "根据文本生成提示音；NAS 使用基础中文合成，建议重要提示使用准备好的 WAV 文件。";
 }
 
+function syncFeishuModeUI() {
+  const mode = $("#automation-feishu-mode");
+  const webhookFields = $("#automation-feishu-webhook-fields");
+  const appFields = $("#automation-feishu-app-fields");
+  const note = $("#automation-feishu-mode-note");
+  if (!mode || !webhookFields || !appFields || !note) return;
+  const isAppBot = mode.value === "app_bot";
+  webhookFields.hidden = isAppBot;
+  appFields.hidden = !isAppBot;
+  note.textContent = isAppBot
+    ? "以企业应用机器人身份向指定账号发送私聊，不需要飞书群。"
+    : "向一个飞书群推送通知。";
+}
+
 async function loadAutomation() {
   try {
     const settings = await api("/api/automation");
@@ -1313,11 +1327,21 @@ async function loadAutomation() {
       ? "Token 已保存；留空不会覆盖。"
       : "尚未保存 Token。";
     $("#automation-feishu-enabled").checked = Boolean(feishu.enabled);
+    $("#automation-feishu-mode").value = feishu.mode || "webhook";
     $("#automation-feishu-webhook").value = feishu.webhook_url || "";
     $("#automation-feishu-secret").value = "";
     $("#automation-feishu-secret-state").textContent = feishu.signing_secret_set
       ? "签名密钥已保存；留空不会覆盖。"
       : "签名可选；启用后会自动附加签名。";
+    $("#automation-feishu-app-id").value = feishu.app_id || "";
+    $("#automation-feishu-app-secret").value = "";
+    $("#automation-feishu-app-secret-state").textContent = feishu.app_secret_set
+      ? "App Secret 已保存；留空不会覆盖。"
+      : "尚未保存 App Secret。";
+    $("#automation-feishu-recipient-type").value = feishu.recipient_id_type || "email";
+    $("#automation-feishu-recipient-id").value = feishu.recipient_id || "";
+    $("#automation-feishu-api-base").value = feishu.api_base_url || "https://open.feishu.cn";
+    syncFeishuModeUI();
     $("#automation-call-enabled").checked = Boolean(calls.enabled);
     $("#automation-call-allowlist").value = listToText(calls.allowed_numbers);
     $("#automation-answer-delay").value = String(calls.answer_after_seconds ?? 10);
@@ -1505,8 +1529,14 @@ function automationPayload() {
       },
       feishu: {
         enabled: $("#automation-feishu-enabled").checked,
+        mode: $("#automation-feishu-mode").value,
         webhook_url: $("#automation-feishu-webhook").value.trim(),
         signing_secret: $("#automation-feishu-secret").value.trim(),
+        app_id: $("#automation-feishu-app-id").value.trim(),
+        app_secret: $("#automation-feishu-app-secret").value.trim(),
+        recipient_id_type: $("#automation-feishu-recipient-type").value,
+        recipient_id: $("#automation-feishu-recipient-id").value.trim(),
+        api_base_url: $("#automation-feishu-api-base").value.trim(),
       },
     },
     calls: {
@@ -1530,6 +1560,7 @@ function automationPayload() {
 }
 
 $("#automation-prompt-source")?.addEventListener("change", syncPromptSourceUI);
+$("#automation-feishu-mode")?.addEventListener("change", syncFeishuModeUI);
 
 document.querySelectorAll(".tab").forEach((tab) => {
   tab.addEventListener("click", () => {

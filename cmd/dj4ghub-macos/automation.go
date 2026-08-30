@@ -37,6 +37,9 @@ const (
 	promptSourceFile          = "file"
 	defaultCallAnswerDelay    = 10
 	defaultCallHangupDelay    = 0
+	feishuModeWebhook         = "webhook"
+	feishuModeAppBot          = "app_bot"
+	defaultFeishuAPIBaseURL   = "https://open.feishu.cn"
 )
 
 const callPromptWarmLead = 2 * time.Second
@@ -63,10 +66,17 @@ type telegramForwardConfig struct {
 }
 
 type feishuForwardConfig struct {
-	Enabled       bool   `json:"enabled"`
-	WebhookURL    string `json:"webhook_url"`
-	SigningSecret string `json:"signing_secret,omitempty"`
-	ClearSecret   bool   `json:"clear_secret,omitempty"`
+	Enabled         bool   `json:"enabled"`
+	Mode            string `json:"mode"`
+	WebhookURL      string `json:"webhook_url"`
+	SigningSecret   string `json:"signing_secret,omitempty"`
+	ClearSecret     bool   `json:"clear_secret,omitempty"`
+	AppID           string `json:"app_id"`
+	AppSecret       string `json:"app_secret,omitempty"`
+	ClearAppSecret  bool   `json:"clear_app_secret,omitempty"`
+	RecipientIDType string `json:"recipient_id_type"`
+	RecipientID     string `json:"recipient_id"`
+	APIBaseURL      string `json:"api_base_url"`
 }
 
 type callAutomationConfig struct {
@@ -109,8 +119,14 @@ type telegramForwardView struct {
 
 type feishuForwardView struct {
 	Enabled          bool   `json:"enabled"`
+	Mode             string `json:"mode"`
 	WebhookURL       string `json:"webhook_url"`
 	SigningSecretSet bool   `json:"signing_secret_set"`
+	AppID            string `json:"app_id"`
+	AppSecretSet     bool   `json:"app_secret_set"`
+	RecipientIDType  string `json:"recipient_id_type"`
+	RecipientID      string `json:"recipient_id"`
+	APIBaseURL       string `json:"api_base_url"`
 }
 
 type callAutomationView struct {
@@ -271,12 +287,40 @@ func normalizeAutomationConfig(config *automationConfig) error {
 	if (config.SMS.Telegram.Enabled || config.Calls.ForwardRecordingsToTelegram) && (config.SMS.Telegram.BotToken == "" || len(config.SMS.Telegram.ChatIDs) == 0) {
 		return errors.New("启用 Telegram 转发时必须填写 Bot Token 和至少一个 Chat ID")
 	}
+	config.SMS.Feishu.Mode = strings.ToLower(strings.TrimSpace(config.SMS.Feishu.Mode))
+	if config.SMS.Feishu.Mode == "" {
+		config.SMS.Feishu.Mode = feishuModeWebhook
+	}
 	config.SMS.Feishu.WebhookURL = strings.TrimSpace(config.SMS.Feishu.WebhookURL)
 	config.SMS.Feishu.SigningSecret = strings.TrimSpace(config.SMS.Feishu.SigningSecret)
+	config.SMS.Feishu.AppID = strings.TrimSpace(config.SMS.Feishu.AppID)
+	config.SMS.Feishu.AppSecret = strings.TrimSpace(config.SMS.Feishu.AppSecret)
+	config.SMS.Feishu.RecipientIDType = strings.ToLower(strings.TrimSpace(config.SMS.Feishu.RecipientIDType))
+	config.SMS.Feishu.RecipientID = strings.TrimSpace(config.SMS.Feishu.RecipientID)
+	config.SMS.Feishu.APIBaseURL = strings.TrimRight(strings.TrimSpace(config.SMS.Feishu.APIBaseURL), "/")
+	if config.SMS.Feishu.APIBaseURL == "" {
+		config.SMS.Feishu.APIBaseURL = defaultFeishuAPIBaseURL
+	}
 	if config.SMS.Feishu.Enabled {
-		parsed, err := url.Parse(config.SMS.Feishu.WebhookURL)
-		if err != nil || parsed.Scheme != "https" || parsed.Host == "" {
-			return errors.New("启用飞书转发时必须填写有效的 HTTPS Webhook 地址")
+		switch config.SMS.Feishu.Mode {
+		case feishuModeWebhook:
+			parsed, err := url.Parse(config.SMS.Feishu.WebhookURL)
+			if err != nil || parsed.Scheme != "https" || parsed.Host == "" {
+				return errors.New("启用飞书群机器人时必须填写有效的 HTTPS Webhook 地址")
+			}
+		case feishuModeAppBot:
+			if config.SMS.Feishu.AppID == "" || config.SMS.Feishu.AppSecret == "" {
+				return errors.New("启用飞书应用私聊时必须填写 App ID 和 App Secret")
+			}
+			if !isFeishuRecipientIDType(config.SMS.Feishu.RecipientIDType) || config.SMS.Feishu.RecipientID == "" {
+				return errors.New("飞书应用私聊必须填写有效的收件人类型和收件人")
+			}
+			parsed, err := url.Parse(config.SMS.Feishu.APIBaseURL)
+			if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+				return errors.New("飞书 API 地址必须是有效的 HTTPS 服务地址")
+			}
+		default:
+			return errors.New("飞书推送方式只能是群机器人或应用私聊")
 		}
 	}
 	if config.Calls.AnswerAfterSeconds < 0 || config.Calls.AnswerAfterSeconds > maxAutomationDelay {
@@ -403,6 +447,7 @@ func (a *app) persistAutomationLocked() error {
 	config := cloneAutomationConfig(a.automation)
 	config.SMS.Telegram.ClearToken = false
 	config.SMS.Feishu.ClearSecret = false
+	config.SMS.Feishu.ClearAppSecret = false
 	data, err := json.MarshalIndent(config, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode automation config: %w", err)
@@ -431,8 +476,14 @@ func automationConfigView(config automationConfig) automationView {
 			},
 			Feishu: feishuForwardView{
 				Enabled:          config.SMS.Feishu.Enabled,
+				Mode:             config.SMS.Feishu.Mode,
 				WebhookURL:       config.SMS.Feishu.WebhookURL,
 				SigningSecretSet: config.SMS.Feishu.SigningSecret != "",
+				AppID:            config.SMS.Feishu.AppID,
+				AppSecretSet:     config.SMS.Feishu.AppSecret != "",
+				RecipientIDType:  config.SMS.Feishu.RecipientIDType,
+				RecipientID:      config.SMS.Feishu.RecipientID,
+				APIBaseURL:       config.SMS.Feishu.APIBaseURL,
 			},
 		},
 		Calls: callAutomationView{
@@ -482,11 +533,17 @@ func (a *app) updateAutomation(w http.ResponseWriter, r *http.Request) {
 	if incoming.SMS.Feishu.SigningSecret == "" && !incoming.SMS.Feishu.ClearSecret {
 		incoming.SMS.Feishu.SigningSecret = previous.SMS.Feishu.SigningSecret
 	}
+	if incoming.SMS.Feishu.AppSecret == "" && !incoming.SMS.Feishu.ClearAppSecret {
+		incoming.SMS.Feishu.AppSecret = previous.SMS.Feishu.AppSecret
+	}
 	if incoming.SMS.Telegram.ClearToken {
 		incoming.SMS.Telegram.BotToken = ""
 	}
 	if incoming.SMS.Feishu.ClearSecret {
 		incoming.SMS.Feishu.SigningSecret = ""
+	}
+	if incoming.SMS.Feishu.ClearAppSecret {
+		incoming.SMS.Feishu.AppSecret = ""
 	}
 	incoming.Calls.PromptSource = strings.ToLower(strings.TrimSpace(incoming.Calls.PromptSource))
 	if incoming.Calls.PromptSource == "" {
@@ -796,6 +853,15 @@ func numberAllowed(number string, allowlist []string) bool {
 	return false
 }
 
+func isFeishuRecipientIDType(value string) bool {
+	switch value {
+	case "open_id", "union_id", "user_id", "email":
+		return true
+	default:
+		return false
+	}
+}
+
 func sendTelegramMessage(ctx context.Context, token, chatID, text string) error {
 	endpoint := "https://api.telegram.org/bot" + url.PathEscape(token) + "/sendMessage"
 	payload := map[string]string{"chat_id": chatID, "text": text}
@@ -840,6 +906,9 @@ func sendTelegramDocumentToEndpoint(ctx context.Context, endpoint, chatID, path,
 }
 
 func sendFeishuMessage(ctx context.Context, config feishuForwardConfig, text string) error {
+	if config.Mode == feishuModeAppBot {
+		return sendFeishuAppBotMessage(ctx, config, text)
+	}
 	payload := map[string]any{
 		"msg_type": "text",
 		"content":  map[string]string{"text": text},
@@ -852,6 +921,80 @@ func sendFeishuMessage(ctx context.Context, config feishuForwardConfig, text str
 		payload["sign"] = base64.StdEncoding.EncodeToString(hash.Sum(nil))
 	}
 	return postJSONWithRetry(ctx, config.WebhookURL, payload, nil)
+}
+
+func sendFeishuAppBotMessage(ctx context.Context, config feishuForwardConfig, text string) error {
+	accessToken, err := fetchFeishuTenantAccessToken(ctx, config)
+	if err != nil {
+		return err
+	}
+	content, err := json.Marshal(map[string]string{"text": text})
+	if err != nil {
+		return fmt.Errorf("encode Feishu text message: %w", err)
+	}
+	endpoint := strings.TrimRight(config.APIBaseURL, "/") + "/open-apis/im/v1/messages?receive_id_type=" + url.QueryEscape(config.RecipientIDType)
+	payload := map[string]string{
+		"receive_id": config.RecipientID,
+		"msg_type":   "text",
+		"content":    string(content),
+	}
+	return postJSONWithRetry(ctx, endpoint, payload, map[string]string{"Authorization": "Bearer " + accessToken})
+}
+
+func fetchFeishuTenantAccessToken(ctx context.Context, config feishuForwardConfig) (string, error) {
+	endpoint := strings.TrimRight(config.APIBaseURL, "/") + "/open-apis/auth/v3/tenant_access_token/internal"
+	payload := map[string]string{"app_id": config.AppID, "app_secret": config.AppSecret}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return "", fmt.Errorf("encode Feishu tenant token request: %w", err)
+	}
+
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		requestCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+		req, err := http.NewRequestWithContext(requestCtx, http.MethodPost, endpoint, strings.NewReader(string(body)))
+		if err == nil {
+			req.Header.Set("Content-Type", "application/json")
+			resp, doErr := http.DefaultClient.Do(req)
+			if doErr == nil {
+				responseBody, readErr := io.ReadAll(resp.Body)
+				resp.Body.Close()
+				if readErr == nil && resp.StatusCode >= 200 && resp.StatusCode < 300 {
+					var result struct {
+						Code              int    `json:"code"`
+						Msg               string `json:"msg"`
+						TenantAccessToken string `json:"tenant_access_token"`
+					}
+					if decodeErr := json.Unmarshal(responseBody, &result); decodeErr == nil {
+						if result.Code == 0 && strings.TrimSpace(result.TenantAccessToken) != "" {
+							cancel()
+							return result.TenantAccessToken, nil
+						}
+						if result.Msg != "" {
+							lastErr = fmt.Errorf("Feishu tenant token rejected: %s", result.Msg)
+						} else {
+							lastErr = errors.New("Feishu tenant token response is invalid")
+						}
+					} else {
+						lastErr = fmt.Errorf("decode Feishu tenant token response: %w", decodeErr)
+					}
+				} else if readErr != nil {
+					lastErr = readErr
+				} else {
+					lastErr = fmt.Errorf("Feishu tenant token HTTP %s", resp.Status)
+				}
+			} else {
+				lastErr = doErr
+			}
+		} else {
+			lastErr = err
+		}
+		cancel()
+		if attempt < 2 {
+			time.Sleep(time.Duration(attempt+1) * 250 * time.Millisecond)
+		}
+	}
+	return "", lastErr
 }
 
 func postJSONWithRetry(ctx context.Context, endpoint string, payload any, headers map[string]string) error {

@@ -148,6 +148,74 @@ func TestNormalizeAutomationConfigAllowsRecordingForwardWithoutSMSForwarding(t *
 	}
 }
 
+func TestNormalizeAutomationConfigAllowsFeishuAppBot(t *testing.T) {
+	config := defaultAutomationConfig()
+	config.SMS.Feishu = feishuForwardConfig{
+		Enabled:         true,
+		Mode:            feishuModeAppBot,
+		AppID:           "cli_test",
+		AppSecret:       "app-secret",
+		RecipientIDType: "email",
+		RecipientID:     "receiver@example.com",
+		APIBaseURL:      "https://fsopen.bytedance.net/",
+	}
+	if err := normalizeAutomationConfig(&config); err != nil {
+		t.Fatalf("normalizeAutomationConfig() rejected Feishu app bot: %v", err)
+	}
+	if config.SMS.Feishu.APIBaseURL != "https://fsopen.bytedance.net" {
+		t.Fatalf("API base URL = %q, want trimmed URL", config.SMS.Feishu.APIBaseURL)
+	}
+}
+
+func TestSendFeishuAppBotMessage(t *testing.T) {
+	var tokenRequest map[string]string
+	var messageRequest map[string]string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/open-apis/auth/v3/tenant_access_token/internal":
+			if err := json.NewDecoder(r.Body).Decode(&tokenRequest); err != nil {
+				t.Fatalf("decode token request: %v", err)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "tenant_access_token": "tenant-token"})
+		case "/open-apis/im/v1/messages":
+			if r.URL.Query().Get("receive_id_type") != "email" {
+				t.Fatalf("receive_id_type = %q, want email", r.URL.Query().Get("receive_id_type"))
+			}
+			if got := r.Header.Get("Authorization"); got != "Bearer tenant-token" {
+				t.Fatalf("Authorization = %q", got)
+			}
+			if err := json.NewDecoder(r.Body).Decode(&messageRequest); err != nil {
+				t.Fatalf("decode message request: %v", err)
+			}
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected request path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	config := feishuForwardConfig{
+		Mode:            feishuModeAppBot,
+		AppID:           "cli_test",
+		AppSecret:       "app-secret",
+		RecipientIDType: "email",
+		RecipientID:     "receiver@example.com",
+		APIBaseURL:      server.URL,
+	}
+	if err := sendFeishuAppBotMessage(context.Background(), config, "短信测试"); err != nil {
+		t.Fatalf("sendFeishuAppBotMessage() error = %v", err)
+	}
+	if tokenRequest["app_id"] != "cli_test" || tokenRequest["app_secret"] != "app-secret" {
+		t.Fatalf("unexpected token request: %#v", tokenRequest)
+	}
+	if messageRequest["receive_id"] != "receiver@example.com" || messageRequest["msg_type"] != "text" {
+		t.Fatalf("unexpected message request: %#v", messageRequest)
+	}
+	if messageRequest["content"] != `{"text":"短信测试"}` {
+		t.Fatalf("message content = %q", messageRequest["content"])
+	}
+}
+
 func TestNormalizeAutomationConfigRejectsRecordingForwardWithoutRecording(t *testing.T) {
 	config := defaultAutomationConfig()
 	config.Calls.ForwardRecordingsToTelegram = true

@@ -556,6 +556,8 @@ input:focus { border-color: color-mix(in srgb, var(--accent) 50%, var(--line)); 
 .automation-field input:focus, .automation-field textarea:focus, .automation-field select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 15%, transparent); }
 .automation-field input:disabled, .automation-field textarea:disabled { cursor: not-allowed; color: var(--dim); background: color-mix(in srgb, var(--field) 66%, var(--surface-soft)); }
 .automation-field small { color: var(--dim); font-size: 9px; font-weight: 450; line-height: 1.45; }
+.automation-subfields { display: grid; grid-column: 1 / -1; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 13px 14px; }
+.automation-subfields[hidden] { display: none; }
 .automation-channel-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border-top: 1px solid var(--hairline); }
 .automation-channel { min-width: 0; }
 .automation-channel + .automation-channel { border-left: 1px solid var(--hairline); }
@@ -597,6 +599,7 @@ input:focus { border-color: color-mix(in srgb, var(--accent) 50%, var(--line)); 
 	.recording-download { grid-column: 2; justify-self: start; }
   .automation-panel-heading { align-items: flex-start; flex-direction: column; }
   .automation-fields { grid-template-columns: 1fr; padding: 15px; }
+  .automation-subfields { grid-template-columns: 1fr; }
   .automation-field.wide { grid-column: auto; }
   .automation-channel summary { padding: 14px 15px; }
   .automation-channel .channel-fields { padding-top: 12px; }

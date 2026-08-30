@@ -254,10 +254,20 @@
                 </div>
               </details>
               <details class="automation-channel" open>
-                <summary><span><strong>飞书</strong><small>使用群机器人 Webhook</small></span><label class="automation-toggle" onclick="event.stopPropagation()"><input id="automation-feishu-enabled" type="checkbox"><span>启用</span></label></summary>
+                <summary><span><strong>飞书</strong><small>群机器人或企业应用私聊</small></span><label class="automation-toggle" onclick="event.stopPropagation()"><input id="automation-feishu-enabled" type="checkbox"><span>启用</span></label></summary>
                 <div class="automation-fields channel-fields">
-                  <label class="automation-field wide"><span>Webhook 地址</span><input id="automation-feishu-webhook" type="url" autocomplete="off" placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/…"></label>
-                  <label class="automation-field wide"><span>签名密钥</span><input id="automation-feishu-secret" type="password" autocomplete="off" placeholder="留空则保留已保存的签名密钥"><small id="automation-feishu-secret-state">签名可选；启用后会自动附加签名。</small></label>
+                  <label class="automation-field wide"><span>推送方式</span><select id="automation-feishu-mode"><option value="webhook">群机器人 Webhook</option><option value="app_bot">企业应用机器人私聊</option></select><small id="automation-feishu-mode-note">向一个飞书群推送通知。</small></label>
+                  <div id="automation-feishu-webhook-fields" class="automation-subfields">
+                    <label class="automation-field wide"><span>Webhook 地址</span><input id="automation-feishu-webhook" type="url" autocomplete="off" placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/…"></label>
+                    <label class="automation-field wide"><span>签名密钥</span><input id="automation-feishu-secret" type="password" autocomplete="off" placeholder="留空则保留已保存的签名密钥"><small id="automation-feishu-secret-state">签名可选；启用后会自动附加签名。</small></label>
+                  </div>
+                  <div id="automation-feishu-app-fields" class="automation-subfields" hidden>
+                    <label class="automation-field"><span>App ID</span><input id="automation-feishu-app-id" autocomplete="off" placeholder="cli_…"></label>
+                    <label class="automation-field"><span>App Secret</span><input id="automation-feishu-app-secret" type="password" autocomplete="off" placeholder="留空则保留已保存的密钥"><small id="automation-feishu-app-secret-state">尚未保存 App Secret。</small></label>
+                    <label class="automation-field"><span>收件人类型</span><select id="automation-feishu-recipient-type"><option value="email">飞书邮箱</option><option value="open_id">Open ID</option><option value="user_id">User ID</option><option value="union_id">Union ID</option></select></label>
+                    <label class="automation-field"><span>收件人</span><input id="automation-feishu-recipient-id" autocomplete="off" placeholder="你的飞书邮箱或 Open ID"><small>只接收本 Hub 推送的私聊通知。</small></label>
+                    <label class="automation-field wide"><span>飞书 API 地址</span><input id="automation-feishu-api-base" type="url" autocomplete="off" placeholder="https://open.feishu.cn"><small>ByteDance 租户使用 https://fsopen.bytedance.net；其他飞书租户通常保持默认。</small></label>
+                  </div>
                 </div>
               </details>
             </div>
