@@ -1,0 +1,105 @@
+#!/bin/sh
+# QDC507 caller-audio route. This is intentionally a small, auditable wrapper
+# around the same ADB/UAC runtime used by the macOS implementation. It never
+# writes firmware or persistent modem configuration.
+set -eu
+
+adb_bin=adb
+runtime_dir=/usr/local/share/dj4ghub/module-voice
+remote_dir=/tmp/dj4ghub-call
+helper="$remote_dir/mavo-pcm-bridge.armv7"
+route_pid=/run/dj4ghub-voice-route.pid
+route_log=/run/dj4ghub-voice-route.log
+calibration_pid=/run/dj4ghub-alsaucm.pid
+calibration_log=/run/dj4ghub-alsaucm.log
+
+adb_cmd() {
+    "$adb_bin" -d "$@"
+}
+
+module_shell() {
+    adb_cmd shell "$1"
+}
+
+require_module() {
+    timeout 12 "$adb_bin" -d wait-for-device >/dev/null
+    test "$(module_shell 'id -u' | tr -d '\r')" = 0
+    test "$(module_shell 'uname -r' | tr -d '\r')" = 3.18.44
+}
+
+sound_devices_ready() {
+    module_shell "test -c /dev/snd/controlC0 && test -c /dev/snd/pcmC0D4p && test -c /dev/snd/pcmC0D4c && test -c /dev/snd/pcmC0D5p && test -c /dev/snd/pcmC0D6c && grep -Fq 'mdm9607-tomtom-i2s-snd-card' /proc/asound/cards"
+}
+
+copy_runtime() {
+    module_shell "mkdir -p '$remote_dir' && chmod 700 '$remote_dir'"
+    for name in qdc507_aprv3.ko qdc507_voice.ko mavo-pcm-bridge.armv7; do
+        test -r "$runtime_dir/$name"
+        adb_cmd push "$runtime_dir/$name" "$remote_dir/$name" >/dev/null
+    done
+    module_shell "chmod 644 '$remote_dir/qdc507_aprv3.ko' '$remote_dir/qdc507_voice.ko' && chmod 755 '$helper'"
+}
+
+ensure_calibration() {
+    module_shell "owned=0; if test -s '$calibration_pid'; then read pid expected_start < '$calibration_pid' || true; current_start=\$(cut -d ' ' -f 22 \"/proc/\$pid/stat\" 2>/dev/null); argv0=\$(tr '\\000' '\\n' < \"/proc/\$pid/cmdline\" 2>/dev/null | sed -n '1p'); test \"\$current_start\" = \"\$expected_start\" && test \"\$argv0\" = /usr/bin/alsaucm_test && owned=1 || true; fi; if test \"\$owned\" -eq 0; then rm -f /run/alsaucm_test '$calibration_pid' '$calibration_log'; nohup /usr/bin/alsaucm_test </dev/null >> '$calibration_log' 2>&1 & pid=\$!; starttime=\$(cut -d ' ' -f 22 \"/proc/\$pid/stat\" 2>/dev/null); printf '%s %s\\n' \"\$pid\" \"\$starttime\" > '$calibration_pid'; n=0; while test \"\$n\" -lt 50 && test ! -p /run/alsaucm_test; do kill -0 \"\$pid\" 2>/dev/null || exit 72; sleep 0.1; n=\$((n+1)); done; test -p /run/alsaucm_test || exit 73; fi; if ! grep -q 'ACDB -> Sent VocProc Cal!' '$calibration_log' 2>/dev/null; then printf 'open snd_soc_msm_9x07_Tomtom_I2S\\n' > /run/alsaucm_test; printf 'set _verb VoLTE\\n' > /run/alsaucm_test; printf 'set _enadev Auxpcm Rx\\n' > /run/alsaucm_test; printf 'set _enadev Auxpcm Tx\\n' > /run/alsaucm_test; n=0; while test \"\$n\" -lt 100; do grep -q 'ACDB -> Sent VocProc Cal!' '$calibration_log' 2>/dev/null && break; sleep 0.1; n=\$((n+1)); done; fi; grep -q 'ACDB -> Sent VocProc Cal!' '$calibration_log'"
+}
+
+prepare() {
+    require_module
+    copy_runtime
+    if ! sound_devices_ready; then
+        if module_shell "grep -q '^qdc507_afe ' /proc/modules"; then
+            echo 'incompatible legacy qdc507_afe driver is loaded; power-cycle the module before enabling caller audio' >&2
+            return 1
+        fi
+        if ! module_shell "grep -q '^qdc507_aprv3 ' /proc/modules"; then
+            module_shell "insmod '$remote_dir/qdc507_aprv3.ko'"
+        fi
+        if ! module_shell "grep -q '^qdc507_voice ' /proc/modules"; then
+            module_shell "insmod '$remote_dir/qdc507_voice.ko'"
+        fi
+    fi
+    n=0
+    until sound_devices_ready; do
+        n=$((n+1))
+        test "$n" -lt 101 || { module_shell 'dmesg | tail -n 100' >&2 || true; return 1; }
+        sleep 0.2
+    done
+    ensure_calibration
+    module_shell "test -c /dev/ttyGS0 && test -p /run/voc_svr && '$helper' --check"
+}
+
+route_ready() {
+    module_shell "test -s '$route_pid' && read pid expected_start < '$route_pid' && test \"\$(cut -d ' ' -f 22 \"/proc/\$pid/stat\" 2>/dev/null)\" = \"\$expected_start\" && test \"\$(tr '\\000' '\\n' < \"/proc/\$pid/cmdline\" 2>/dev/null | sed -n '1p')\" = '$helper' && grep -q 'VoLTE route session active on hw:0,4' '$route_log' && test \"\$(cat /sys/class/android_usb/f_audio/audio_enable)\" = 1 && grep -q '^state: RUNNING' /proc/asound/card0/pcm4p/sub0/status && grep -q '^state: RUNNING' /proc/asound/card0/pcm4c/sub0/status"
+}
+
+start() {
+    prepare
+    if route_ready; then
+        return 0
+    fi
+    module_shell "rm -f '$route_pid' '$route_log'; nohup '$helper' --voice-route-session --verbose </dev/null >> '$route_log' 2>&1 & pid=\$!; starttime=\$(cut -d ' ' -f 22 \"/proc/\$pid/stat\" 2>/dev/null); case \"\$pid:\$starttime\" in :*|*:|*[!0-9:]*) exit 74;; *) printf '%s %s\\n' \"\$pid\" \"\$starttime\" > '$route_pid';; esac"
+    n=0
+    until route_ready; do
+        n=$((n+1))
+        if test "$n" -ge 121; then
+            module_shell "test ! -f '$route_log' || tail -n 120 '$route_log'" >&2 || true
+            return 1
+        fi
+        sleep 0.25
+    done
+}
+
+stop() {
+    # Only stop the route process created by this service. Kernel modules stay
+    # loaded until the next module power-cycle because their DSP callbacks are
+    # not safe to hot-unload.
+    module_shell "if test -s '$route_pid'; then read pid expected_start < '$route_pid' || true; current_start=\$(cut -d ' ' -f 22 \"/proc/\$pid/stat\" 2>/dev/null); argv0=\$(tr '\\000' '\\n' < \"/proc/\$pid/cmdline\" 2>/dev/null | sed -n '1p'); if test \"\$current_start\" = \"\$expected_start\" && test \"\$argv0\" = '$helper'; then kill -TERM \"\$pid\" 2>/dev/null || true; n=0; while kill -0 \"\$pid\" 2>/dev/null && test \"\$n\" -lt 50; do sleep 0.1; n=\$((n+1)); done; fi; fi; rm -f '$route_pid'; echo 0 > /sys/class/android_usb/f_audio/audio_enable; if test -p /run/voc_svr; then printf 'T\\n' > /run/voc_svr; printf 'T\\n' > /run/voc_svr; printf 'B\\n' > /run/voc_svr; fi; test \"\$(cat /sys/class/android_usb/f_audio/audio_enable)\" = 0"
+}
+
+case "${1:-}" in
+    prepare) prepare ;;
+    start) start ;;
+    stop) stop ;;
+    *) echo "usage: $0 {prepare|start|stop}" >&2; exit 64 ;;
+esac

@@ -112,6 +112,7 @@ type app struct {
 	modulePromptMu      sync.Mutex
 	modulePromptSource  string
 	modulePromptModTime int64
+	moduleVoiceRouteMu  sync.Mutex
 
 	profileNotesMu     sync.Mutex
 	profileNotes       map[string]profileNote

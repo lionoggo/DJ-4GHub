@@ -955,28 +955,44 @@ func (a *app) processIncomingCall(id uint64, ctx context.Context) {
 
 func (a *app) runAnsweredCallWorkflow(id uint64, ctx context.Context, config automationConfig, modulePromptReady bool) {
 	number := a.currentCallNumber(id)
-	// This module rejects QPCMV while a call is still ringing.  Switch the
-	// audio route only after ATA has put the call into its connected state.
-	// The QDC507 needs a short period after the route is enabled before its
-	// UAC playback endpoint accepts a stream. Starting aplay too early is
-	// otherwise reported as a generic ALSA exit status even though the same
-	// device works outside a call.
+	// On Linux the caller-facing UAC route is hosted inside the QDC507. It is
+	// intentionally started only after ATA has connected the call. The public
+	// QPCMV command is rejected by this firmware and only opens a host PCM
+	// stream; it does not bridge audio to the far end.
+	routeStarted := false
 	if config.Calls.EnableUSBAudio {
 		if !waitForCall(ctx, 600*time.Millisecond) {
 			return
 		}
-		response, err := a.runATCommand("AT+QPCMV=1,2", 3*time.Second)
-		if err != nil || !atCommandSucceeded(response) {
-			log.Printf("USB voice audio preparation failed after answer: response=%q err=%v", response, err)
-		} else {
-			verification, verificationErr := a.runATCommand("AT+QPCMV?", 3*time.Second)
-			if verificationErr != nil || !atCommandSucceeded(verification) {
-				log.Printf("USB voice audio route verification failed: response=%q err=%v", verification, verificationErr)
-			}
-			if !waitForCall(ctx, 1200*time.Millisecond) {
+		if runtime.GOOS == "linux" {
+			var err error
+			routeStarted, err = a.startModuleVoiceRoute(ctx)
+			if err != nil {
+				log.Printf("module caller-audio route did not start: %v", err)
+			} else if !waitForCall(ctx, 1200*time.Millisecond) {
 				return
 			}
+		} else {
+			response, err := a.runATCommand("AT+QPCMV=1,2", 3*time.Second)
+			if err != nil || !atCommandSucceeded(response) {
+				log.Printf("USB voice audio preparation failed after answer: response=%q err=%v", response, err)
+			} else {
+				verification, verificationErr := a.runATCommand("AT+QPCMV?", 3*time.Second)
+				if verificationErr != nil || !atCommandSucceeded(verification) {
+					log.Printf("USB voice audio route verification failed: response=%q err=%v", verification, verificationErr)
+				}
+				if !waitForCall(ctx, 1200*time.Millisecond) {
+					return
+				}
+			}
 		}
+	}
+	if routeStarted {
+		defer func() {
+			if err := a.stopModuleVoiceRoute(); err != nil {
+				log.Printf("module caller-audio route cleanup failed: %v", err)
+			}
+		}()
 	}
 	a.setCallStatus(id, "已接听", "正在播放提示音", true)
 	if config.Calls.RecordCalls {
@@ -1530,7 +1546,10 @@ func normalizeLinuxPromptWAV(path string) error {
 	}
 	const targetRate = uint32(8000)
 	targetSamples := int((uint64(sourceSamples)*uint64(targetRate) + uint64(sourceRate) - 1) / uint64(sourceRate))
-	converted := make([]byte, targetSamples*2)
+	// Prime the module UAC route with 500 ms of silence. The first frames after
+	// the voice bridge opens can be discarded while the DSP route settles.
+	const promptPrerollSamples = 4000
+	converted := make([]byte, (promptPrerollSamples+targetSamples)*2)
 	for index := 0; index < targetSamples; index++ {
 		position := uint64(index) * uint64(sourceRate)
 		base := int(position / uint64(targetRate))
@@ -1545,7 +1564,8 @@ func normalizeLinuxPromptWAV(path string) error {
 			second = int64(int16(binary.LittleEndian.Uint16(raw[(base+1)*2 : (base+1)*2+2])))
 		}
 		value := first + (second-first)*int64(fraction)/int64(targetRate)
-		binary.LittleEndian.PutUint16(converted[index*2:index*2+2], uint16(int16(value)))
+		targetOffset := (promptPrerollSamples + index) * 2
+		binary.LittleEndian.PutUint16(converted[targetOffset:targetOffset+2], uint16(int16(value)))
 	}
 	return writePCM16MonoWAV(path, converted, targetRate)
 }

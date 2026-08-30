@@ -67,14 +67,17 @@ func TestNormalizeLinuxPromptWAV(t *testing.T) {
 	if got := binary.LittleEndian.Uint32(data[24:28]); got != 8000 {
 		t.Fatalf("sample rate = %d, want 8000", got)
 	}
-	if got := binary.LittleEndian.Uint32(data[40:44]); got != 4 {
-		t.Fatalf("data size = %d, want 4", got)
+	if got := binary.LittleEndian.Uint32(data[40:44]); got != 8004 {
+		t.Fatalf("data size = %d, want 8004", got)
 	}
 	if first := int16(binary.LittleEndian.Uint16(data[44:46])); first != 0 {
 		t.Fatalf("first output sample = %d, want 0", first)
 	}
-	if second := int16(binary.LittleEndian.Uint16(data[46:48])); second != 2000 {
-		t.Fatalf("second output sample = %d, want 2000", second)
+	if firstSpeech := int16(binary.LittleEndian.Uint16(data[44+8000 : 46+8000])); firstSpeech != 0 {
+		t.Fatalf("first speech sample = %d, want 0", firstSpeech)
+	}
+	if secondSpeech := int16(binary.LittleEndian.Uint16(data[46+8000 : 48+8000])); secondSpeech != 2000 {
+		t.Fatalf("second speech sample = %d, want 2000", secondSpeech)
 	}
 }
 
