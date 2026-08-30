@@ -532,6 +532,11 @@ func (a *app) generateTypedPrompt(text string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("generate prompt speech: %w (%s)", err, strings.TrimSpace(string(output)))
 	}
+	if runtime.GOOS == "linux" {
+		if err := normalizeLinuxPromptWAV(temporaryPath); err != nil {
+			return "", fmt.Errorf("normalize prompt speech for USB Audio: %w", err)
+		}
+	}
 	destination := filepath.Join(directory, "typed-prompt"+extension)
 	if err := os.Rename(temporaryPath, destination); err != nil {
 		return "", fmt.Errorf("save typed prompt: %w", err)
@@ -952,12 +957,25 @@ func (a *app) runAnsweredCallWorkflow(id uint64, ctx context.Context, config aut
 	number := a.currentCallNumber(id)
 	// This module rejects QPCMV while a call is still ringing.  Switch the
 	// audio route only after ATA has put the call into its connected state.
+	// The QDC507 needs a short period after the route is enabled before its
+	// UAC playback endpoint accepts a stream. Starting aplay too early is
+	// otherwise reported as a generic ALSA exit status even though the same
+	// device works outside a call.
 	if config.Calls.EnableUSBAudio {
-		if !waitForCall(ctx, 300*time.Millisecond) {
+		if !waitForCall(ctx, 600*time.Millisecond) {
 			return
 		}
-		if response, err := a.runATCommand("AT+QPCMV=1,2", 3*time.Second); err != nil || !atCommandSucceeded(response) {
+		response, err := a.runATCommand("AT+QPCMV=1,2", 3*time.Second)
+		if err != nil || !atCommandSucceeded(response) {
 			log.Printf("USB voice audio preparation failed after answer: response=%q err=%v", response, err)
+		} else {
+			verification, verificationErr := a.runATCommand("AT+QPCMV?", 3*time.Second)
+			if verificationErr != nil || !atCommandSucceeded(verification) {
+				log.Printf("USB voice audio route verification failed: response=%q err=%v", verification, verificationErr)
+			}
+			if !waitForCall(ctx, 1200*time.Millisecond) {
+				return
+			}
 		}
 	}
 	a.setCallStatus(id, "已接听", "正在播放提示音", true)
@@ -1461,6 +1479,77 @@ func writePCM16MonoWAV(path string, raw []byte, sampleRate uint32) error {
 	return os.WriteFile(path, append(header, raw...), 0o600)
 }
 
+// normalizeLinuxPromptWAV converts the espeak-ng WAV output into the exact
+// stream format exposed by the QDC507 UAC endpoint. Avoiding ALSA's live
+// resampling is important because the endpoint changes mode immediately after
+// AT+QPCMV enables call audio.
+func normalizeLinuxPromptWAV(path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	if len(data) < 12 || string(data[0:4]) != "RIFF" || string(data[8:12]) != "WAVE" {
+		return errors.New("提示音不是 RIFF/WAV 文件")
+	}
+	var format []byte
+	var raw []byte
+	for offset := 12; offset+8 <= len(data); {
+		size := int(binary.LittleEndian.Uint32(data[offset+4 : offset+8]))
+		start := offset + 8
+		end := start + size
+		if size < 0 || end < start || end > len(data) {
+			return errors.New("提示音 WAV 数据不完整")
+		}
+		switch string(data[offset : offset+4]) {
+		case "fmt ":
+			format = data[start:end]
+		case "data":
+			raw = data[start:end]
+		}
+		offset = end
+		if offset%2 != 0 {
+			offset++
+		}
+	}
+	if len(format) < 16 || len(raw) == 0 {
+		return errors.New("提示音 WAV 缺少音频数据")
+	}
+	if binary.LittleEndian.Uint16(format[0:2]) != 1 || binary.LittleEndian.Uint16(format[2:4]) != 1 || binary.LittleEndian.Uint16(format[14:16]) != 16 {
+		return errors.New("提示音必须为单声道 16 位 PCM WAV")
+	}
+	sourceRate := binary.LittleEndian.Uint32(format[4:8])
+	if sourceRate == 0 {
+		return errors.New("提示音 WAV 采样率无效")
+	}
+	if sourceRate == 8000 {
+		return nil
+	}
+	sourceSamples := len(raw) / 2
+	if sourceSamples == 0 {
+		return errors.New("提示音 WAV 没有完整的 PCM 样本")
+	}
+	const targetRate = uint32(8000)
+	targetSamples := int((uint64(sourceSamples)*uint64(targetRate) + uint64(sourceRate) - 1) / uint64(sourceRate))
+	converted := make([]byte, targetSamples*2)
+	for index := 0; index < targetSamples; index++ {
+		position := uint64(index) * uint64(sourceRate)
+		base := int(position / uint64(targetRate))
+		fraction := position % uint64(targetRate)
+		if base >= sourceSamples-1 {
+			base = sourceSamples - 1
+			fraction = 0
+		}
+		first := int64(int16(binary.LittleEndian.Uint16(raw[base*2 : base*2+2])))
+		second := first
+		if base+1 < sourceSamples {
+			second = int64(int16(binary.LittleEndian.Uint16(raw[(base+1)*2 : (base+1)*2+2])))
+		}
+		value := first + (second-first)*int64(fraction)/int64(targetRate)
+		binary.LittleEndian.PutUint16(converted[index*2:index*2+2], uint16(int16(value)))
+	}
+	return writePCM16MonoWAV(path, converted, targetRate)
+}
+
 func (a *app) forwardCallRecording(path, number string, recordedAt time.Time, callID uint64) {
 	config, err := a.automationSnapshot()
 	if err != nil {
@@ -1591,7 +1680,26 @@ func playPrompt(ctx context.Context, config callAutomationConfig, number string)
 		return exec.CommandContext(ctx, "afplay", config.PromptFile).Run()
 	}
 	if runtime.GOOS == "linux" && config.USBAudioPlaybackDevice != "" {
-		return exec.CommandContext(ctx, "aplay", "-D", config.USBAudioPlaybackDevice, config.PromptFile).Run()
+		var lastErr error
+		for attempt := 1; attempt <= 3; attempt++ {
+			command := exec.CommandContext(ctx, "aplay", "-D", config.USBAudioPlaybackDevice, config.PromptFile)
+			output, err := command.CombinedOutput()
+			if err == nil {
+				return nil
+			}
+			if errors.Is(err, context.Canceled) || ctx.Err() != nil {
+				return context.Canceled
+			}
+			detail := strings.TrimSpace(string(output))
+			if detail == "" {
+				detail = "no ALSA diagnostic output"
+			}
+			lastErr = fmt.Errorf("Linux USB Audio 播放第 %d 次失败: %w (%s)", attempt, err, detail)
+			if attempt < 3 && !waitForCall(ctx, 700*time.Millisecond) {
+				return context.Canceled
+			}
+		}
+		return lastErr
 	}
 	return exec.CommandContext(ctx, "aplay", config.PromptFile).Run()
 }

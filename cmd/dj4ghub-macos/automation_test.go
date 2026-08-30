@@ -48,6 +48,36 @@ func TestWritePCM16MonoWAV(t *testing.T) {
 	}
 }
 
+func TestNormalizeLinuxPromptWAV(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "prompt.wav")
+	raw := make([]byte, 8)
+	for index, sample := range []int16{0, 1000, 2000, 3000} {
+		binary.LittleEndian.PutUint16(raw[index*2:index*2+2], uint16(sample))
+	}
+	if err := writePCM16MonoWAV(path, raw, 16000); err != nil {
+		t.Fatal(err)
+	}
+	if err := normalizeLinuxPromptWAV(path); err != nil {
+		t.Fatalf("normalizeLinuxPromptWAV() error = %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := binary.LittleEndian.Uint32(data[24:28]); got != 8000 {
+		t.Fatalf("sample rate = %d, want 8000", got)
+	}
+	if got := binary.LittleEndian.Uint32(data[40:44]); got != 4 {
+		t.Fatalf("data size = %d, want 4", got)
+	}
+	if first := int16(binary.LittleEndian.Uint16(data[44:46])); first != 0 {
+		t.Fatalf("first output sample = %d, want 0", first)
+	}
+	if second := int16(binary.LittleEndian.Uint16(data[46:48])); second != 2000 {
+		t.Fatalf("second output sample = %d, want 2000", second)
+	}
+}
+
 func TestParseCLCCCallsActiveCallIsNotIncoming(t *testing.T) {
 	response := "+CLCC: 1,1,0,0,0,\"+8613812345678\",145\r\nOK"
 	calls := parseCLCCCalls(response)
