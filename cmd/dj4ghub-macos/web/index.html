@@ -52,9 +52,13 @@
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 6.8A2.8 2.8 0 0 1 7.8 4h8.4A2.8 2.8 0 0 1 19 6.8v5.4a2.8 2.8 0 0 1-2.8 2.8H11l-4.5 3v-3.1A2.8 2.8 0 0 1 5 12.2Z"/><path d="M8.5 8.5h7M8.5 11.5h4.7"/></svg>
           <span><strong>短信</strong><small>收件箱与发送</small></span>
         </button>
+        <button class="tab" data-view="calls" type="button">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7.2 4.7 9.5 8l-1.7 2.1a14.7 14.7 0 0 0 6.1 6.1l2.1-1.7 3.3 2.3-1.4 2.4c-.5.8-1.4 1.2-2.3 1-6.9-1.8-12.1-7-13.9-13.9-.2-.9.2-1.8 1-2.3Z"/><path d="M14.5 5.5c2.3.5 4 2.2 4.5 4.5"/></svg>
+          <span><strong>通话</strong><small>来电、录音与处理</small></span>
+        </button>
         <button class="tab" data-view="automation" type="button">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5v3M12 17.5v3M3.5 12h3M17.5 12h3M5.9 5.9 8 8M16 16l2.1 2.1M18.1 5.9 16 8M8 16l-2.1 2.1"/><circle cx="12" cy="12" r="4.5"/></svg>
-          <span><strong>自动化</strong><small>转发与来电</small></span>
+          <span><strong>自动化</strong><small>转发与接听规则</small></span>
         </button>
         <button class="tab" data-view="esim" type="button">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3h6.5L19 7.5V21H8a3 3 0 0 1-3-3V6a3 3 0 0 1 3-3Z"/><path d="M10 8.5v7M14 8.5v7M8.5 11h7M8.5 14h7"/></svg>
@@ -183,9 +187,51 @@
         <div id="sms-list" class="list empty">暂无短信</div>
       </section>
 
+      <section id="calls" class="view" aria-label="通话控制">
+        <div class="view-intro call-view-intro">
+          <div><span class="section-kicker">CALL CONTROL</span><h2>通话</h2><p>处理当前来电，查看本机录音与本次服务运行内的通话记录。</p></div>
+          <button id="open-call-automation" class="secondary" type="button">接听规则</button>
+        </div>
+
+        <section id="call-stage" class="call-stage is-idle" aria-live="polite">
+          <div class="call-stage-orbit" aria-hidden="true"><span></span><i></i></div>
+          <div class="call-stage-copy">
+            <span id="call-stage-eyebrow">来电状态</span>
+            <strong id="call-stage-number">等待来电</strong>
+            <p id="call-stage-detail">自动接听、提示音与录音状态会实时显示在这里。</p>
+          </div>
+          <div class="call-stage-meta">
+            <span><small>当前状态</small><strong id="call-stage-state">空闲</strong></span>
+            <span><small>最近更新</small><strong id="call-stage-updated">--</strong></span>
+          </div>
+          <div class="call-stage-actions">
+            <button id="call-answer" class="secondary" type="button" disabled>手动接听</button>
+            <button id="call-hangup" class="danger" type="button" disabled>挂断</button>
+          </div>
+        </section>
+
+        <div class="calls-workspace">
+          <section class="calls-panel recordings-panel">
+            <div class="calls-panel-heading">
+              <div><span class="panel-icon" aria-hidden="true">◖</span><strong>录音</strong><small>保留于当前 Mac；可直接播放或下载。</small></div>
+              <span id="call-recordings-count" class="calls-count">0 个</span>
+            </div>
+            <div id="call-recordings" class="call-recordings empty">暂无可用录音</div>
+          </section>
+
+          <section class="calls-panel history-panel">
+            <div class="calls-panel-heading">
+              <div><span class="panel-icon" aria-hidden="true">⌁</span><strong>近期通话</strong><small>仅显示当前服务启动后的来电。</small></div>
+              <span id="call-history-count" class="calls-count">0 条</span>
+            </div>
+            <div id="call-history" class="call-history empty">本次运行尚无来电</div>
+          </section>
+        </div>
+      </section>
+
       <section id="automation" class="view">
         <div class="view-intro">
-          <div><span class="section-kicker">AUTOMATION</span><h2>自动化</h2><p>新短信可转发到飞书、Telegram 或指定手机；来电可自动接听并播放本地提示音。</p></div>
+          <div><span class="section-kicker">AUTOMATION</span><h2>自动化</h2><p>管理短信转发与来电接听规则；实时通话与录音请前往“通话”。</p></div>
           <div class="view-meta"><span>配置存储</span><strong>仅本机</strong></div>
         </div>
         <form id="automation-form" class="automation-layout">

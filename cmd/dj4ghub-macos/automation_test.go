@@ -150,6 +150,82 @@ func TestCallRecordingModuleFilename(t *testing.T) {
 	}
 }
 
+func TestCallsAPIListsCurrentHistoryAndRecordings(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "automation.json")
+	recordingDirectory := filepath.Join(filepath.Dir(configPath), "recordings")
+	if err := os.MkdirAll(recordingDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	filename := "dj4ghub_call_20260830_143000_1.wav"
+	if err := os.WriteFile(filepath.Join(recordingDirectory, filename), []byte("RIFF"+strings.Repeat("x", 64)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 30, 14, 30, 0, 0, time.Local)
+	instance := &app{
+		automationPath: configPath,
+		callStatus:     callRuntimeStatus{State: "通话结束", Number: "10086", Detail: "已自动挂断", UpdatedAt: now},
+		callHistory: []callHistoryItem{{
+			ID:                  1,
+			Number:              "10086",
+			State:               "通话结束",
+			StartedAt:           now,
+			RecordingName:       filename,
+			ForwardedToTelegram: true,
+		}},
+	}
+	response := httptest.NewRecorder()
+	instance.getCalls(response, httptest.NewRequest(http.MethodGet, "/api/calls", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("getCalls() status = %d, body=%s", response.Code, response.Body.String())
+	}
+	var result callsView
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Active || len(result.History) != 1 || len(result.Recordings) != 1 {
+		t.Fatalf("getCalls() = %#v", result)
+	}
+	if result.Recordings[0].Name != filename || !result.Recordings[0].ForwardedToTelegram {
+		t.Fatalf("recording view = %#v", result.Recordings[0])
+	}
+
+	download := httptest.NewRequest(http.MethodGet, "/api/calls/recordings/"+filename, nil)
+	download.SetPathValue("name", filename)
+	downloadResponse := httptest.NewRecorder()
+	instance.downloadCallRecording(downloadResponse, download)
+	if downloadResponse.Code != http.StatusOK {
+		t.Fatalf("downloadCallRecording() status = %d, body=%s", downloadResponse.Code, downloadResponse.Body.String())
+	}
+	if got := downloadResponse.Header().Get("Content-Type"); got != "audio/wav" {
+		t.Fatalf("recording Content-Type = %q", got)
+	}
+	if !strings.Contains(downloadResponse.Body.String(), "RIFF") {
+		t.Fatal("downloadCallRecording() did not serve the WAV data")
+	}
+}
+
+func TestCallRecordingNameRejectsPathTraversal(t *testing.T) {
+	for _, name := range []string{"../secret.wav", "other.wav", "dj4ghub_call_2026.wav.raw"} {
+		if isCallRecordingName(name) {
+			t.Fatalf("isCallRecordingName(%q) = true", name)
+		}
+	}
+}
+
+func TestCallControlRejectsActionsWithoutAnActiveCall(t *testing.T) {
+	instance := &app{automationPath: filepath.Join(t.TempDir(), "automation.json")}
+	answer := httptest.NewRecorder()
+	instance.answerActiveCall(answer, httptest.NewRequest(http.MethodPost, "/api/calls/answer", nil))
+	if answer.Code != http.StatusConflict {
+		t.Fatalf("answerActiveCall() status = %d, body=%s", answer.Code, answer.Body.String())
+	}
+	hangup := httptest.NewRecorder()
+	instance.hangupActiveCall(hangup, httptest.NewRequest(http.MethodPost, "/api/calls/hangup", nil))
+	if hangup.Code != http.StatusConflict {
+		t.Fatalf("hangupActiveCall() status = %d, body=%s", hangup.Code, hangup.Body.String())
+	}
+}
+
 func TestSendTelegramDocumentUsesMultipartAttachment(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "call.wav")
 	if err := os.WriteFile(path, []byte("RIFFtest-audio"), 0o600); err != nil {

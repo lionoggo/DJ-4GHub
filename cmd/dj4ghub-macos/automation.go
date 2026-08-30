@@ -28,6 +28,8 @@ const (
 	defaultSMSForwardTemplate = "【DJ 4G Hub】\n发件人：{{sender}}\n时间：{{timestamp}}\n内容：{{content}}"
 	maxAutomationRecipients   = 20
 	maxAutomationDelay        = 120
+	maxCallHistoryItems       = 40
+	maxCallRecordingItems     = 60
 	modulePromptFilename      = "dj4ghub_prompt.wav"
 )
 
@@ -123,15 +125,45 @@ type callRuntimeStatus struct {
 	UpdatedAt time.Time `json:"updated_at,omitempty"`
 }
 
+type callHistoryItem struct {
+	ID                  uint64    `json:"id"`
+	Number              string    `json:"number,omitempty"`
+	State               string    `json:"state"`
+	Detail              string    `json:"detail,omitempty"`
+	Answered            bool      `json:"answered"`
+	StartedAt           time.Time `json:"started_at"`
+	EndedAt             time.Time `json:"ended_at,omitempty"`
+	RecordingName       string    `json:"recording_name,omitempty"`
+	ForwardedToTelegram bool      `json:"forwarded_to_telegram"`
+}
+
+type callRecordingView struct {
+	Name                string    `json:"name"`
+	Number              string    `json:"number,omitempty"`
+	RecordedAt          time.Time `json:"recorded_at"`
+	Size                int64     `json:"size"`
+	DownloadURL         string    `json:"download_url"`
+	ForwardedToTelegram bool      `json:"forwarded_to_telegram"`
+}
+
+type callsView struct {
+	Active     bool                `json:"active"`
+	Call       callRuntimeStatus   `json:"call"`
+	History    []callHistoryItem   `json:"history"`
+	Recordings []callRecordingView `json:"recordings"`
+}
+
 type activeCall struct {
-	ID        uint64
-	Number    string
-	ctx       context.Context
-	cancel    context.CancelFunc
-	recording *callRecording
+	ID              uint64
+	Number          string
+	ctx             context.Context
+	cancel          context.CancelFunc
+	workflowClaimed bool
+	recording       *callRecording
 }
 
 type callRecording struct {
+	callID         uint64
 	moduleFilename string
 	directory      string
 	startedAt      time.Time
@@ -493,6 +525,154 @@ func (a *app) getAutomationStatus(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"call": status})
 }
 
+func (a *app) getCalls(w http.ResponseWriter, _ *http.Request) {
+	config, err := a.automationSnapshot()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	a.callMu.Lock()
+	active := a.activeCall != nil
+	status := a.callStatus
+	history := make([]callHistoryItem, len(a.callHistory))
+	for index := range a.callHistory {
+		history[len(a.callHistory)-1-index] = a.callHistory[index]
+	}
+	a.callMu.Unlock()
+	recordings, err := a.callRecordingViews(config.Calls, history)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, callsView{Active: active, Call: status, History: history, Recordings: recordings})
+}
+
+func (a *app) answerActiveCall(w http.ResponseWriter, _ *http.Request) {
+	config, err := a.automationSnapshot()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	a.callMu.Lock()
+	if a.activeCall == nil {
+		a.callMu.Unlock()
+		writeError(w, http.StatusConflict, "当前没有等待接听的来电")
+		return
+	}
+	id := a.activeCall.ID
+	ctx := a.activeCall.ctx
+	number := a.activeCall.Number
+	a.callMu.Unlock()
+	if !a.claimCallWorkflow(id) {
+		writeError(w, http.StatusConflict, "该来电已由自动流程处理")
+		return
+	}
+	a.setCallStatus(id, "正在手动接听", "已从通话控制台发出接听指令", false)
+	modulePromptReady := a.prepareModulePrompt(config.Calls)
+	if err := a.answerCall(); err != nil {
+		a.releaseCallWorkflow(id)
+		a.setCallStatus(id, "接听失败", err.Error(), false)
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	log.Printf("incoming call manually answered from %s", displayCallNumber(number))
+	go a.runAnsweredCallWorkflow(id, ctx, config, modulePromptReady)
+	writeJSON(w, http.StatusOK, map[string]string{"message": "已接听，正在执行提示音与录音流程"})
+}
+
+func (a *app) hangupActiveCall(w http.ResponseWriter, _ *http.Request) {
+	a.callMu.Lock()
+	active := a.activeCall != nil
+	a.callMu.Unlock()
+	if !active {
+		writeError(w, http.StatusConflict, "当前没有进行中的来电")
+		return
+	}
+	if err := a.hangupCall(); err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	a.clearActiveCall("已手动挂断")
+	writeJSON(w, http.StatusOK, map[string]string{"message": "通话已挂断"})
+}
+
+func (a *app) callRecordingViews(config callAutomationConfig, history []callHistoryItem) ([]callRecordingView, error) {
+	directory := a.callRecordingDirectory(config)
+	entries, err := os.ReadDir(directory)
+	if errors.Is(err, os.ErrNotExist) {
+		return []callRecordingView{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	historyByRecording := make(map[string]callHistoryItem, len(history))
+	for _, item := range history {
+		if item.RecordingName != "" {
+			historyByRecording[item.RecordingName] = item
+		}
+	}
+	result := make([]callRecordingView, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || !isCallRecordingName(entry.Name()) {
+			continue
+		}
+		info, statErr := entry.Info()
+		if statErr != nil || info.Size() <= 44 {
+			continue
+		}
+		historyItem := historyByRecording[entry.Name()]
+		result = append(result, callRecordingView{
+			Name:                entry.Name(),
+			Number:              historyItem.Number,
+			RecordedAt:          info.ModTime(),
+			Size:                info.Size(),
+			DownloadURL:         "/api/calls/recordings/" + url.PathEscape(entry.Name()),
+			ForwardedToTelegram: historyItem.ForwardedToTelegram,
+		})
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].RecordedAt.After(result[j].RecordedAt) })
+	if len(result) > maxCallRecordingItems {
+		result = result[:maxCallRecordingItems]
+	}
+	return result, nil
+}
+
+func (a *app) downloadCallRecording(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if !isCallRecordingName(name) {
+		writeError(w, http.StatusNotFound, "未找到录音文件")
+		return
+	}
+	config, err := a.automationSnapshot()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	path := filepath.Join(a.callRecordingDirectory(config.Calls), name)
+	file, err := os.Open(path)
+	if errors.Is(err, os.ErrNotExist) {
+		writeError(w, http.StatusNotFound, "未找到录音文件")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		writeError(w, http.StatusNotFound, "未找到录音文件")
+		return
+	}
+	w.Header().Set("Content-Type", "audio/wav")
+	w.Header().Set("Content-Disposition", "inline; filename=\""+name+"\"")
+	http.ServeContent(w, r, name, info.ModTime(), file)
+}
+
+func isCallRecordingName(name string) bool {
+	return filepath.Base(name) == name && strings.HasPrefix(name, "dj4ghub_call_") && strings.HasSuffix(name, ".wav")
+}
+
 func (a *app) recordIncomingSMS(sender, content string, timestamp time.Time) {
 	items, _ := a.mergeSMS([]receivedSMS{{Sender: sender, Content: content, Timestamp: timestamp}})
 	for _, item := range items {
@@ -698,6 +878,7 @@ func (a *app) observeIncomingCall(number string) {
 			a.activeCall.Number = number
 			a.callStatus.Number = number
 			a.callStatus.UpdatedAt = time.Now()
+			a.updateCallHistoryLocked(a.activeCall.ID, func(item *callHistoryItem) { item.Number = number })
 		}
 		a.callMu.Unlock()
 		return
@@ -706,7 +887,12 @@ func (a *app) observeIncomingCall(number string) {
 	ctx, cancel := context.WithCancel(context.Background())
 	call := &activeCall{ID: a.callEventID, Number: number, ctx: ctx, cancel: cancel}
 	a.activeCall = call
-	a.callStatus = callRuntimeStatus{State: "检测到来电", Number: number, Detail: "等待自动化规则", UpdatedAt: time.Now()}
+	now := time.Now()
+	a.callStatus = callRuntimeStatus{State: "检测到来电", Number: number, Detail: "等待自动化规则", UpdatedAt: now}
+	a.callHistory = append(a.callHistory, callHistoryItem{ID: call.ID, Number: number, State: "检测到来电", Detail: "等待自动化规则", StartedAt: now})
+	if len(a.callHistory) > maxCallHistoryItems {
+		a.callHistory = append([]callHistoryItem(nil), a.callHistory[len(a.callHistory)-maxCallHistoryItems:]...)
+	}
 	a.callMu.Unlock()
 	log.Printf("incoming call detected from %s", displayCallNumber(number))
 	go a.processIncomingCall(call.ID, ctx)
@@ -726,23 +912,23 @@ func (a *app) processIncomingCall(id uint64, ctx context.Context) {
 		a.setCallStatus(id, "来电未接听", "号码不在白名单中", false)
 		return
 	}
-	modulePromptReady := false
-	// QPSND routes a UFS WAV file directly to the far end of an active cellular
-	// call. It is the preferred route for QDC507; USB audio remains a fallback.
-	if config.Calls.PromptFile != "" && a.modem == nil && !a.demo {
-		if err := a.ensureModulePrompt(config.Calls.PromptFile); err != nil {
-			log.Printf("module prompt preparation failed; host playback remains available: %v", err)
-		} else {
-			modulePromptReady = true
-		}
+	modulePromptReady := a.prepareModulePrompt(config.Calls)
+	if !a.claimCallWorkflow(id) {
+		return
 	}
 	log.Printf("answering incoming call from %s", displayCallNumber(number))
 	if err := a.answerCall(); err != nil {
+		a.releaseCallWorkflow(id)
 		a.setCallStatus(id, "接听失败", err.Error(), false)
 		log.Printf("incoming call answer failed: %v", err)
 		return
 	}
 	log.Printf("incoming call answered")
+	a.runAnsweredCallWorkflow(id, ctx, config, modulePromptReady)
+}
+
+func (a *app) runAnsweredCallWorkflow(id uint64, ctx context.Context, config automationConfig, modulePromptReady bool) {
+	number := a.currentCallNumber(id)
 	// This module rejects QPCMV while a call is still ringing.  Switch the
 	// audio route only after ATA has put the call into its connected state.
 	if config.Calls.EnableUSBAudio {
@@ -797,6 +983,19 @@ func (a *app) processIncomingCall(id uint64, ctx context.Context) {
 	}
 	log.Printf("incoming call hung up automatically")
 	a.clearActiveCall("已自动挂断")
+}
+
+func (a *app) prepareModulePrompt(config callAutomationConfig) bool {
+	// QPSND sends a UFS WAV file directly to the far end of an active call.
+	// USB audio remains the fallback for module firmware that rejects QPSND.
+	if config.PromptFile == "" || a.modem != nil || a.demo {
+		return false
+	}
+	if err := a.ensureModulePrompt(config.PromptFile); err != nil {
+		log.Printf("module prompt preparation failed; host playback remains available: %v", err)
+		return false
+	}
+	return true
 }
 
 func (a *app) startModulePromptPlayback() (string, string, error) {
@@ -919,13 +1118,38 @@ func (a *app) currentCallNumber(id uint64) string {
 	return a.activeCall.Number
 }
 
+func (a *app) claimCallWorkflow(id uint64) bool {
+	a.callMu.Lock()
+	defer a.callMu.Unlock()
+	if a.activeCall == nil || a.activeCall.ID != id || a.activeCall.workflowClaimed {
+		return false
+	}
+	a.activeCall.workflowClaimed = true
+	return true
+}
+
+func (a *app) releaseCallWorkflow(id uint64) {
+	a.callMu.Lock()
+	defer a.callMu.Unlock()
+	if a.activeCall != nil && a.activeCall.ID == id {
+		a.activeCall.workflowClaimed = false
+	}
+}
+
 func (a *app) setCallStatus(id uint64, state, detail string, answered bool) {
 	a.callMu.Lock()
 	defer a.callMu.Unlock()
 	if a.activeCall == nil || a.activeCall.ID != id {
 		return
 	}
-	a.callStatus = callRuntimeStatus{State: state, Number: a.activeCall.Number, Detail: detail, Answered: answered, UpdatedAt: time.Now()}
+	now := time.Now()
+	a.callStatus = callRuntimeStatus{State: state, Number: a.activeCall.Number, Detail: detail, Answered: answered, UpdatedAt: now}
+	a.updateCallHistoryLocked(id, func(item *callHistoryItem) {
+		item.Number = a.activeCall.Number
+		item.State = state
+		item.Detail = detail
+		item.Answered = answered
+	})
 }
 
 func (a *app) clearActiveCall(reason string) {
@@ -938,11 +1162,39 @@ func (a *app) clearActiveCall(reason string) {
 	number := call.Number
 	call.cancel()
 	a.activeCall = nil
-	a.callStatus = callRuntimeStatus{State: "通话结束", Number: number, Detail: reason, UpdatedAt: time.Now()}
+	now := time.Now()
+	a.callStatus = callRuntimeStatus{State: "通话结束", Number: number, Detail: reason, UpdatedAt: now}
+	a.updateCallHistoryLocked(call.ID, func(item *callHistoryItem) {
+		item.Number = number
+		item.State = "通话结束"
+		item.Detail = reason
+		item.EndedAt = now
+	})
 	a.callMu.Unlock()
 	if call.recording != nil {
 		go a.finishCallRecording(*call.recording, number)
 	}
+}
+
+func (a *app) updateCallHistoryLocked(id uint64, update func(*callHistoryItem)) {
+	for index := len(a.callHistory) - 1; index >= 0; index-- {
+		if a.callHistory[index].ID == id {
+			update(&a.callHistory[index])
+			return
+		}
+	}
+}
+
+func (a *app) markCallRecording(id uint64, name string) {
+	a.callMu.Lock()
+	defer a.callMu.Unlock()
+	a.updateCallHistoryLocked(id, func(item *callHistoryItem) { item.RecordingName = name })
+}
+
+func (a *app) markCallRecordingForwarded(id uint64) {
+	a.callMu.Lock()
+	defer a.callMu.Unlock()
+	a.updateCallHistoryLocked(id, func(item *callHistoryItem) { item.ForwardedToTelegram = true })
 }
 
 func (a *app) startCallRecording(id uint64, config callAutomationConfig) error {
@@ -971,6 +1223,7 @@ func (a *app) startCallRecording(id uint64, config callAutomationConfig) error {
 		return fmt.Errorf("QAUDRD: %s", strings.TrimSpace(response))
 	}
 	recording := &callRecording{
+		callID:         id,
 		moduleFilename: filename,
 		directory:      a.callRecordingDirectory(config),
 		startedAt:      time.Now(),
@@ -1050,7 +1303,8 @@ func (a *app) finishCallRecording(recording callRecording, number string) {
 		log.Printf("call recording saved but module cleanup failed: response=%q err=%v", deleteResponse, deleteErr)
 	}
 	log.Printf("caller-side recording saved to %s (%d bytes; caller %s)", path, len(data), displayCallNumber(number))
-	go a.forwardCallRecording(path, number, recording.startedAt)
+	a.markCallRecording(recording.callID, filepath.Base(path))
+	go a.forwardCallRecording(path, number, recording.startedAt, recording.callID)
 }
 
 func (a *app) scheduleHostCallRecording(id uint64, ctx context.Context, config callAutomationConfig) {
@@ -1089,6 +1343,7 @@ func (a *app) startHostCallRecording(id uint64, parent context.Context, config c
 		return fmt.Errorf("start host recorder: %w", err)
 	}
 	recording := &callRecording{
+		callID:     id,
 		directory:  directory,
 		startedAt:  time.Now(),
 		rawPath:    rawPath,
@@ -1154,10 +1409,11 @@ func (a *app) finishHostCallRecording(recording callRecording, number string) {
 		log.Printf("host recording raw cleanup failed: %v", err)
 	}
 	log.Printf("caller-side recording saved to %s (%d raw bytes; caller %s)", recording.outputPath, stat.Size(), displayCallNumber(number))
-	go a.forwardCallRecording(recording.outputPath, number, recording.startedAt)
+	a.markCallRecording(recording.callID, filepath.Base(recording.outputPath))
+	go a.forwardCallRecording(recording.outputPath, number, recording.startedAt, recording.callID)
 }
 
-func (a *app) forwardCallRecording(path, number string, recordedAt time.Time) {
+func (a *app) forwardCallRecording(path, number string, recordedAt time.Time, callID uint64) {
 	config, err := a.automationSnapshot()
 	if err != nil {
 		log.Printf("call recording forwarding configuration unavailable: %v", err)
@@ -1174,12 +1430,17 @@ func (a *app) forwardCallRecording(path, number string, recordedAt time.Time) {
 		caller = "未知号码"
 	}
 	caption := fmt.Sprintf("【DJ 4G Hub】来电录音\n号码：%s\n录制时间：%s", caller, recordedAt.Local().Format("2006-01-02 15:04:05"))
+	forwarded := false
 	for _, chatID := range config.SMS.Telegram.ChatIDs {
 		if err := sendTelegramDocument(context.Background(), config.SMS.Telegram.BotToken, chatID, path, caption); err != nil {
 			log.Printf("Telegram call recording forwarding to %s failed: %v", chatID, err)
 			continue
 		}
+		forwarded = true
 		log.Printf("call recording forwarded to Telegram chat %s", chatID)
+	}
+	if forwarded {
+		a.markCallRecordingForwarded(callID)
 	}
 }
 

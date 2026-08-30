@@ -106,6 +106,7 @@ type app struct {
 	activeCall  *activeCall
 	callEventID uint64
 	callStatus  callRuntimeStatus
+	callHistory []callHistoryItem
 
 	modulePromptMu      sync.Mutex
 	modulePromptSource  string
@@ -765,6 +766,10 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("GET /api/automation", a.getAutomation)
 	mux.HandleFunc("PUT /api/automation", a.updateAutomation)
 	mux.HandleFunc("GET /api/automation/status", a.getAutomationStatus)
+	mux.HandleFunc("GET /api/calls", a.getCalls)
+	mux.HandleFunc("POST /api/calls/answer", a.answerActiveCall)
+	mux.HandleFunc("POST /api/calls/hangup", a.hangupActiveCall)
+	mux.HandleFunc("GET /api/calls/recordings/{name}", a.downloadCallRecording)
 	mux.HandleFunc("POST /api/at", a.executeAT)
 	mux.HandleFunc("GET /api/network", a.networkDiagnostic)
 	mux.HandleFunc("GET /api/network/local", a.localNetworkConnection)

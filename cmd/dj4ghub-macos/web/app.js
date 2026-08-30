@@ -1229,6 +1229,141 @@ async function loadAutomationStatus() {
   }
 }
 
+let callRecordingsSignature = "";
+let callsInFlight = false;
+
+function formatCallTime(value, withDate = false) {
+  if (!value) return "--";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "--";
+  return withDate ? date.toLocaleString() : date.toLocaleTimeString();
+}
+
+function formatBytes(value) {
+  const bytes = Number(value || 0);
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function updateCallStage(call, active) {
+  const stage = $("#call-stage");
+  const state = call.state || "空闲";
+  const answered = Boolean(call.answered);
+  const isEnding = !active && Boolean(call.state);
+  const isRinging = active && !answered;
+  stage.classList.toggle("is-idle", !active && !call.state);
+  stage.classList.toggle("is-ringing", isRinging);
+  stage.classList.toggle("is-active", active && answered);
+  stage.classList.toggle("is-ending", isEnding);
+  $("#call-stage-eyebrow").textContent = active ? (answered ? "通话进行中" : "检测到来电") : "来电状态";
+  $("#call-stage-number").textContent = call.number || (active ? "正在识别来电号码" : "等待来电");
+  $("#call-stage-detail").textContent = call.detail || (active ? "可从此处接听或挂断。" : "自动接听、提示音与录音状态会实时显示在这里。");
+  $("#call-stage-state").textContent = state;
+  $("#call-stage-updated").textContent = formatCallTime(call.updated_at);
+  $("#call-answer").disabled = !active || answered || /失败|未接听/.test(state);
+  $("#call-hangup").disabled = !active;
+}
+
+function renderCallHistory(history) {
+  const list = $("#call-history");
+  const items = Array.isArray(history) ? history : [];
+  $("#call-history-count").textContent = `${items.length} 条`;
+  if (!items.length) {
+    list.className = "call-history empty";
+    list.textContent = "本次运行尚无来电";
+    return;
+  }
+  list.className = "call-history";
+  const rows = items.map((item) => {
+    const row = document.createElement("article");
+    row.className = "call-history-item";
+    const marker = document.createElement("span");
+    marker.className = "call-history-marker";
+    if (item.answered) marker.classList.add("is-answered");
+    else if (/失败|未接听/.test(item.state || "")) marker.classList.add("is-attention");
+    const copy = document.createElement("div");
+    copy.className = "call-history-copy";
+    const title = document.createElement("strong");
+    title.textContent = item.number || "未知号码";
+    const detail = document.createElement("p");
+    detail.textContent = [item.state, item.detail, item.recording_name ? "已保存录音" : ""].filter(Boolean).join(" · ");
+    copy.append(title, detail);
+    const time = document.createElement("time");
+    time.className = "call-history-time";
+    time.dateTime = item.started_at || "";
+    time.textContent = formatCallTime(item.started_at);
+    row.append(marker, copy, time);
+    return row;
+  });
+  list.replaceChildren(...rows);
+}
+
+function renderCallRecordings(recordings) {
+  const list = $("#call-recordings");
+  const items = Array.isArray(recordings) ? recordings : [];
+  $("#call-recordings-count").textContent = `${items.length} 个`;
+  const signature = items.map((item) => `${item.name}:${item.size}:${item.forwarded_to_telegram}`).join("|");
+  if (signature === callRecordingsSignature) return;
+  callRecordingsSignature = signature;
+  if (!items.length) {
+    list.className = "call-recordings empty";
+    list.textContent = "暂无可用录音";
+    return;
+  }
+  list.className = "call-recordings";
+  const cards = items.map((item) => {
+    const card = document.createElement("article");
+    card.className = "recording-card";
+    const glyph = document.createElement("span");
+    glyph.className = "recording-glyph";
+    glyph.setAttribute("aria-hidden", "true");
+    glyph.textContent = "◖";
+    const content = document.createElement("div");
+    content.className = "recording-content";
+    const line = document.createElement("div");
+    line.className = "recording-title-line";
+    const title = document.createElement("strong");
+    title.textContent = item.number || "来电录音";
+    line.append(title);
+    if (item.forwarded_to_telegram) {
+      const forwarded = document.createElement("span");
+      forwarded.textContent = "已转 Telegram";
+      line.append(forwarded);
+    }
+    const meta = document.createElement("small");
+    meta.textContent = [formatCallTime(item.recorded_at, true), formatBytes(item.size)].join(" · ");
+    const audio = document.createElement("audio");
+    audio.controls = true;
+    audio.preload = "metadata";
+    audio.src = item.download_url;
+    content.append(line, meta, audio);
+    const download = document.createElement("a");
+    download.className = "secondary compact recording-download";
+    download.href = item.download_url;
+    download.download = item.name || "call-recording.wav";
+    download.textContent = "下载";
+    card.append(glyph, content, download);
+    return card;
+  });
+  list.replaceChildren(...cards);
+}
+
+async function loadCalls() {
+  if (callsInFlight) return;
+  callsInFlight = true;
+  try {
+    const result = await api("/api/calls");
+    updateCallStage(result.call || {}, Boolean(result.active));
+    renderCallHistory(result.history);
+    renderCallRecordings(result.recordings);
+  } catch (error) {
+    $("#call-stage-detail").textContent = `读取通话状态失败：${error.message}`;
+  } finally {
+    callsInFlight = false;
+  }
+}
+
 function automationPayload() {
   return {
     sms: {
@@ -1278,6 +1413,7 @@ document.querySelectorAll(".tab").forEach((tab) => {
     if (tab.dataset.view === "esim") loadESIM();
     else setESIMHealthPolling(false);
     if (tab.dataset.view === "network") loadNetwork();
+    if (tab.dataset.view === "calls") loadCalls();
     if (tab.dataset.view === "automation") {
       loadAutomation();
       loadAutomationStatus();
@@ -1290,6 +1426,43 @@ document.querySelectorAll(".tab").forEach((tab) => {
       });
     }
   });
+});
+
+$("#open-call-automation").addEventListener("click", () => {
+  document.querySelector('.tab[data-view="automation"]').click();
+});
+
+$("#call-answer").addEventListener("click", async () => {
+  const button = $("#call-answer");
+  button.disabled = true;
+  try {
+    const result = await api("/api/calls/answer", { method: "POST" });
+    notice(result.message || "已接听来电");
+    await loadCalls();
+  } catch (error) {
+    notice(error.message);
+    await loadCalls();
+  }
+});
+
+$("#call-hangup").addEventListener("click", async () => {
+  const confirmed = await showModal({
+    title: "挂断当前通话",
+    message: "将立即结束当前来电与后续提示音、录音流程。",
+    confirmLabel: "确认挂断",
+    danger: true,
+  });
+  if (!confirmed) return;
+  const button = $("#call-hangup");
+  button.disabled = true;
+  try {
+    const result = await api("/api/calls/hangup", { method: "POST" });
+    notice(result.message || "通话已挂断");
+  } catch (error) {
+    notice(error.message);
+  } finally {
+    await loadCalls();
+  }
 });
 
 $("#automation-form").addEventListener("submit", async (event) => {
@@ -1388,7 +1561,7 @@ $("#at-form").addEventListener("submit", async (event) => {
 });
 
 $("#refresh").addEventListener("click", async () => {
-  await Promise.all([loadStatus(), loadSMS(), loadSidebarConnection()]);
+  await Promise.all([loadStatus(), loadSMS(), loadSidebarConnection(), loadCalls()]);
   notice("状态已刷新");
 });
 $("#refresh-sms").addEventListener("click", async () => {
@@ -1451,9 +1624,11 @@ loadStatus();
 loadSMS();
 loadSidebarConnection();
 loadAutomationStatus();
+loadCalls();
 setNetworkTrafficPolling(true);
 setNetworkActivityPolling(true);
 setInterval(loadStatus, 10000);
 setInterval(loadSMS, 5000);
 setInterval(loadSidebarConnection, 10000);
 setInterval(loadAutomationStatus, 5000);
+setInterval(loadCalls, 3000);
