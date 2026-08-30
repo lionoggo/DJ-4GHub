@@ -54,7 +54,7 @@ DJ 4G Hub 最初从 [ZenGeekLabs/DJOneHub](https://github.com/ZenGeekLabs/DJOneH
 - 重新设计本地网页控制台，统一浅色、深色和响应式界面。
 - 面向 macOS 的 USB 设备发现、libusb AT 通信、热插拔恢复和换卡刷新。
 - 短信收发、自动轮询、验证码提取、长短信分片和模块旧短信清理。
-- 新短信可自动转发到指定手机号、Telegram Bot 和飞书群机器人；凭证只保存于本机权限受限配置文件。
+- 新短信可自动转发到指定手机号、Telegram Bot、飞书群机器人或飞书企业应用私聊；凭证只保存于本机权限受限配置文件。
 - 来电白名单、延迟接听、自动挂断与可配置提示音；USB Audio/UAC 仅在明确启用后尝试开启。
 - 实体 eUICC 卡片的 Profile 读取、下载、启用、改名、删除及号码备注。
 - 短信模式与 USB 网卡模式切换，并明确显示当前工作模式。
@@ -74,7 +74,7 @@ DJ 4G Hub 最初从 [ZenGeekLabs/DJOneHub](https://github.com/ZenGeekLabs/DJOneH
 | USB 4G 上网 | 可用 | 切换 USB 网卡模式并检查 macOS 网络接口 |
 | 联网活动 | 可用 | 展示连接元数据，不读取 HTTPS 页面内容 |
 | AT 调试 | 可用 | 直接向模块发送 AT 指令 |
-| 自动接听与来电录音 | 可用 | 支持白名单、提示语、来电方语音录制及 Telegram 附件转发 |
+| 自动接听与来电录音 | 可用 | 支持白名单、提示语、来电方语音录制及 Telegram WAV 附件转发；飞书录音转发规划中 |
 | Apple Silicon | 可用 | 当前发行包面向 macOS 13+、M 系列芯片 |
 | Intel Mac | 未验证 | 尚未发布经过真机验证的发行包 |
 | Linux / QNAP NAS | 实机验证中 | 支持标准 Quectel 串口，并为 DJI/Baiwang `2ca3:4006` 提供原生 Linux USB 适配；TS-464C2 使用 `linux/amd64`。UAC 提示音与录音需在容器中以实际设备验证 |
@@ -174,13 +174,13 @@ dj4ghub open           重新打开管理页面
 
 ### 自动化
 
-“自动化”页面可将新收到的未读短信转发到一个或多个手机号码、Telegram Chat ID 或飞书群机器人。手机号和号码白名单可配置；Telegram Bot Token、飞书 Webhook 签名密钥不会回显，且只写入权限为 `0600` 的本机配置文件。
+“自动化”页面可将新收到的未读短信转发到一个或多个手机号码、Telegram Chat ID、飞书群机器人或飞书企业应用机器人私聊。手机号和号码白名单可配置；Telegram Bot Token、飞书 Webhook 签名密钥和 App Secret 不会回显，且只写入权限为 `0600` 的本机配置文件。企业应用私聊不需要飞书群。
 
 自动接听依赖运营商语音能力、模块固件和 AT 端口。可设置来电白名单、接听延迟、提示音文件和自动挂断时间。若要让来电方听到提示音，必须另外验证模块 USB Audio/UAC 已被系统识别并把播放命令路由到该音频设备；默认系统播放器只用于本机默认音频输出。
 
 ## Linux / 威联通 NAS
 
-Linux 版本支持标准 AT 串口，并为当前 DJI/Baiwang `2ca3:4006` 私有 USB AT 接口提供原生适配，无需 Linux libusb。TS-464C2 推荐使用 `packaging/qnap/docker-compose.yml` 构建 `linux/amd64` 容器；首次运行仍需在 NAS 实机验证 USB 权限、AT 通信与 UAC 音频。完整部署与安全说明见 [docs/QNAP.md](docs/QNAP.md)。
+Linux 版本支持标准 AT 串口，并为当前 DJI/Baiwang `2ca3:4006` 私有 USB AT 接口提供原生适配，无需 Linux libusb。TS-464C2 推荐使用 `packaging/qnap/docker-compose.yml` 构建 `linux/amd64` 容器；首次运行仍需在 NAS 实机验证 USB 权限、AT 通信与 UAC 音频。完整部署与安全说明见 [docs/QNAP.md](docs/QNAP.md)，一次性部署、通知与验收流程见 [docs/OPERATIONS.md](docs/OPERATIONS.md)。
 
 ### eSIM / 卡片
 

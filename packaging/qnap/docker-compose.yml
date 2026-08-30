@@ -10,11 +10,12 @@ services:
     restart: unless-stopped
     privileged: true
     ports:
-      - "127.0.0.1:7575:7575"
+      - "${DJ4GHUB_BIND:-127.0.0.1}:7575:7575"
     volumes:
       - /share/Container/dj4ghub:/data
 
 # The private Baiwang 2ca3:4006 USB interface is not a ttyUSB device. The
 # privileged setting is intentional for the native private USB transport and
-# USB Audio device access. The UI remains localhost-only on the NAS. Do not
-# expose port 7575 to the public internet.
+# USB Audio device access. The UI remains localhost-only on the NAS unless an
+# explicit, trusted LAN address is supplied as DJ4GHUB_BIND. Do not expose
+# port 7575 to the public internet.

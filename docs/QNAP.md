@@ -2,7 +2,8 @@
 
 DJ 4G Hub 可作为 Linux 服务运行在 QTS / QuTS hero 的原生 Linux 环境，或
 由 Container Station 提供的容器中。短信转发、Telegram、飞书和自动接听逻辑
-均在此服务内运行；浏览器只用于配置和查看状态。
+均在此服务内运行；浏览器只用于配置和查看状态。首次部署后的通知、通话与验收
+步骤见 [OPERATIONS.md](OPERATIONS.md)。
 
 ## 适用前提
 
@@ -40,7 +41,8 @@ DJ 4G Hub 可作为 Linux 服务运行在 QTS / QuTS hero 的原生 Linux 环境
 ```
 
 配置文件会以仅拥有者可读写的权限保存，其中含 Telegram Bot Token、飞书
-Webhook 与签名密钥。请把它放在受限共享目录中且不要提交到 Git。
+Webhook/签名密钥或飞书企业应用 App Secret。请把它放在受限共享目录中且不要
+提交到 Git。
 
 默认只监听 NAS 本机。不要直接把控制台暴露到公网；若需远程访问，请使用
 VPN、SSH 隧道，或由 NAS 的已认证反向代理提供保护。
@@ -54,8 +56,11 @@ ALSA 与中文 eSpeak NG。
 
 TS-464C2 推荐从仓库根目录使用 `packaging/qnap/docker-compose.yml` 构建。该
 配置会以原生 USB 访问当前模块的私有 `2ca3:4006` 接口，并将运行配置、录音目录
-挂载到 `/share/Container/dj4ghub`。容器仅发布到 NAS 本机的 `127.0.0.1:7575`；
-若要远程访问，请在 QTS 的已认证反向代理或 VPN 后使用。
+挂载到 `/share/Container/dj4ghub`。容器默认仅发布到 NAS 本机的
+`127.0.0.1:7575`；若要远程访问，请在 QTS 的已认证反向代理或 VPN 后使用。仅在
+受信任 LAN 中确有直接访问需要时，可在启动时传入 NAS 自身固定地址，例如
+`DJ4GHUB_BIND=192.168.1.20 docker compose -f packaging/qnap/docker-compose.yml up -d --build`；
+不要使用 `0.0.0.0`，并限制 NAS 防火墙来源网段。
 
 ```sh
 mkdir -p /share/Container/dj4ghub
@@ -71,7 +76,9 @@ DOCKER_REGISTRY=docker.m.daocloud.io \
 ```
 
 容器启动后，先检查日志中是否出现 `USB AT · 2ca3:4006`，再配置短信与自动
-接听规则。若没有出现，请停止容器，不要反复切换模块的 USB 模式。
+接听规则。若没有出现，请停止容器，不要反复切换模块的 USB 模式。飞书企业应用
+私聊使用普通飞书 API 地址 `https://open.feishu.cn`；如果租户后台指定其他 API
+域名，应以该后台提示为准。
 
 对于标准串口模块，可以不使用特权容器，仅映射对应的 `/dev/ttyUSB2` 等设备到
 容器，并通过 `-port` 明确指定。私有 USB 接口没有串口节点，不能只映射
