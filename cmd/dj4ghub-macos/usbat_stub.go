@@ -1,4 +1,4 @@
-//go:build !cgo || (!darwin && !linux)
+//go:build !linux && (!darwin || !cgo)
 
 package main
 
@@ -10,7 +10,7 @@ import (
 type usbAT struct{}
 
 func openDJIUSBAT() (*usbAT, error) {
-	return nil, errors.New("USB AT requires a macOS or Linux cgo build with libusb")
+	return nil, errors.New("USB AT requires a macOS cgo build with libusb or a Linux build")
 }
 
 func (u *usbAT) Close() {}

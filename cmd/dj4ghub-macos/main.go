@@ -20,6 +20,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -696,7 +697,10 @@ func (a *app) ensureUSBAT() error {
 	if a.demo || a.modem != nil || a.usbAT != nil {
 		return nil
 	}
-	if a.currentUSBDevice() == nil {
+	// macOS discovery uses ioreg before opening the private USB interface.
+	// Linux opens the matching /dev/bus/usb node directly, so ioreg-style
+	// inventory is neither available nor required there.
+	if runtime.GOOS == "darwin" && a.currentUSBDevice() == nil {
 		a.port = "未检测到 DJI USB 设备"
 		a.discoveryError = "DJI USB device is not connected"
 		return errors.New("DJI USB device is not connected")
@@ -838,7 +842,7 @@ func (a *app) status(w http.ResponseWriter, _ *http.Request) {
 	if a.modem == nil {
 		// A libusb handle may survive a physical unplug. Refresh the macOS USB
 		// inventory before using it so the UI never reports a stale connection.
-		if a.usbAT != nil && a.currentUSBDevice() == nil {
+		if runtime.GOOS == "darwin" && a.usbAT != nil && a.currentUSBDevice() == nil {
 			a.markUSBATDetached("DJI USB device disconnected")
 		}
 		if err := a.ensureUSBAT(); err != nil {
@@ -878,6 +882,12 @@ func (a *app) status(w http.ResponseWriter, _ *http.Request) {
 
 func (a *app) currentUSBDevice() *usbDeviceStatus {
 	if a.modem != nil || a.demo {
+		return a.usbDevice
+	}
+	if runtime.GOOS == "linux" {
+		// The Linux private-USB transport owns physical presence detection. Do
+		// not call the macOS-only ioreg scanner and mistake its absence for an
+		// unplugged module.
 		return a.usbDevice
 	}
 	usbDevice := discoverDJIUSBDevice()

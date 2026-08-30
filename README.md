@@ -77,7 +77,7 @@ DJ 4G Hub 最初从 [ZenGeekLabs/DJOneHub](https://github.com/ZenGeekLabs/DJOneH
 | 自动接听与来电录音 | 可用 | 支持白名单、提示语、来电方语音录制及 Telegram 附件转发 |
 | Apple Silicon | 可用 | 当前发行包面向 macOS 13+、M 系列芯片 |
 | Intel Mac | 未验证 | 尚未发布经过真机验证的发行包 |
-| Linux / QNAP NAS | USB AT 预览可用 | 支持标准 Quectel 串口，并为 DJI/Baiwang `2ca3:4006` 提供 Linux libusb 预览适配；TS-464C2 推荐 `linux/amd64` 容器。Linux UAC 提示音与录音仍在适配 |
+| Linux / QNAP NAS | 实机验证中 | 支持标准 Quectel 串口，并为 DJI/Baiwang `2ca3:4006` 提供原生 Linux USB 适配；TS-464C2 使用 `linux/amd64`。UAC 提示音与录音需在容器中以实际设备验证 |
 | iPhone / iPad | 规划中 | 需要独立的移动端架构、权限和安全设计 |
 
 ## 硬件与系统
@@ -180,7 +180,7 @@ dj4ghub open           重新打开管理页面
 
 ## Linux / 威联通 NAS
 
-Linux 版本支持标准 AT 串口，并为当前 DJI/Baiwang `2ca3:4006` 私有 USB AT 接口提供预览适配。私有接口构建依赖 libusb，TS-464C2 推荐使用 `packaging/qnap/docker-compose.yml` 构建 `linux/amd64` 容器，首次运行仍需在 NAS 实机验证 USB 权限与枚举。Linux UAC 提示音与来电录音仍在适配；完整部署与安全说明见 [docs/QNAP.md](docs/QNAP.md)。
+Linux 版本支持标准 AT 串口，并为当前 DJI/Baiwang `2ca3:4006` 私有 USB AT 接口提供原生适配，无需 Linux libusb。TS-464C2 推荐使用 `packaging/qnap/docker-compose.yml` 构建 `linux/amd64` 容器；首次运行仍需在 NAS 实机验证 USB 权限、AT 通信与 UAC 音频。完整部署与安全说明见 [docs/QNAP.md](docs/QNAP.md)。
 
 ### eSIM / 卡片
 

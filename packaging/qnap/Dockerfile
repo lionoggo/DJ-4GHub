@@ -1,18 +1,15 @@
 FROM golang:1.26-bookworm AS build
 
 WORKDIR /src
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends pkg-config libusb-1.0-0-dev \
-    && rm -rf /var/lib/apt/lists/*
 COPY . .
-RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build \
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
     -trimpath -buildvcs=false -ldflags='-s -w' \
     -o /out/dj4ghub ./cmd/dj4ghub-macos
 
 FROM debian:bookworm-slim
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates espeak-ng ffmpeg libasound2 libusb-1.0-0 alsa-utils \
+    && apt-get install -y --no-install-recommends ca-certificates espeak-ng ffmpeg libasound2 alsa-utils \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build /out/dj4ghub /usr/local/bin/dj4ghub
 COPY packaging/qnap/dj4ghub-uac-call-recorder /usr/local/bin/dj4ghub-uac-call-recorder

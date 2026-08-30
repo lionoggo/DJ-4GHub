@@ -9,14 +9,13 @@ DJ 4G Hub 可作为 Linux 服务运行在 QTS / QuTS hero 的原生 Linux 环境
 - 标准 Quectel AT 串口：系统能看见 `/dev/ttyUSB*` 或 `/dev/ttyACM*`，建议
   显式传入 AT 端口。
 - DJI/Baiwang 私有接口：当前模块常显示为 `2ca3:4006`，没有 `ttyUSB` 节点。
-  本仓库的 Linux libusb 构建提供直接访问该接口的预览适配；在 Container
-  Station 中需要 USB 设备权限，首次运行必须实机验证。
+  本仓库的 Linux 原生 USB 传输会直接访问此接口，不依赖 Linux libusb；在
+  Container Station 中仍需要 USB 设备权限，首次运行必须实机验证。
 - TS-464C2 使用 `linux/amd64` 镜像。其他机型必须改用与 NAS CPU 匹配的镜像。
 
 ## 构建
 
-在装有 Go 1.26+、`pkg-config` 和 `libusb-1.0` 开发包的匹配 Linux 构建机中，
-按 NAS 的 CPU 选择架构：
+在装有 Go 1.26+ 的构建机中，按 NAS 的 CPU 选择架构：
 
 ```sh
 ./scripts/build-linux.sh amd64  # 常见 Intel / AMD 威联通
@@ -25,6 +24,9 @@ DJ 4G Hub 可作为 Linux 服务运行在 QTS / QuTS hero 的原生 Linux 环境
 
 生成的二进制位于 `dist/linux-<arch>/dj4ghub`。复制到 NAS 的共享目录，
 例如 `/share/Container/dj4ghub/dj4ghub`，并赋予执行权限。
+
+该脚本使用原生 Linux USB 传输，因此可在 macOS 上直接交叉构建 `linux/amd64`
+静态二进制，不需要 QNAP 本机安装 Go、libusb 或编译工具。
 
 ## 首次运行
 
@@ -43,10 +45,15 @@ Webhook 与签名密钥。请把它放在受限共享目录中且不要提交到
 默认只监听 NAS 本机。不要直接把控制台暴露到公网；若需远程访问，请使用
 VPN、SSH 隧道，或由 NAS 的已认证反向代理提供保护。
 
+对于 DJI/Baiwang 私有接口，模块的 `/dev/bus/usb/...` 节点通常仅允许 QTS
+管理员访问。免容器方式可先验证私有 AT、实体 SIM、短信与自动接听控制；来电
+提示音、录音和中文语音合成仍推荐下文的 Container Station 运行时，因为它提供
+ALSA、eSpeak NG 和 ffmpeg。
+
 ## Container Station
 
 TS-464C2 推荐从仓库根目录使用 `packaging/qnap/docker-compose.yml` 构建。该
-配置会以 libusb 访问当前模块的私有 `2ca3:4006` 接口，并将运行配置、录音目录
+配置会以原生 USB 访问当前模块的私有 `2ca3:4006` 接口，并将运行配置、录音目录
 挂载到 `/share/Container/dj4ghub`。容器仅发布到 NAS 本机的 `127.0.0.1:7575`；
 若要远程访问，请在 QTS 的已认证反向代理或 VPN 后使用。
 
