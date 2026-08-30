@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -187,7 +188,7 @@ func TestSendFeishuAppBotMessage(t *testing.T) {
 			if err := json.NewDecoder(r.Body).Decode(&messageRequest); err != nil {
 				t.Fatalf("decode message request: %v", err)
 			}
-			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0})
 		default:
 			t.Fatalf("unexpected request path %q", r.URL.Path)
 		}
@@ -216,6 +217,89 @@ func TestSendFeishuAppBotMessage(t *testing.T) {
 	}
 }
 
+func TestSendFeishuAudioMessage(t *testing.T) {
+	opusPath := filepath.Join(t.TempDir(), "call.opus")
+	if err := os.WriteFile(opusPath, []byte("opus-recording"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var messageRequest map[string]string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/open-apis/auth/v3/tenant_access_token/internal":
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "tenant_access_token": "tenant-token"})
+		case "/open-apis/im/v1/files":
+			if got := r.Header.Get("Authorization"); got != "Bearer tenant-token" {
+				t.Fatalf("upload Authorization = %q", got)
+			}
+			if err := r.ParseMultipartForm(1 << 20); err != nil {
+				t.Fatalf("ParseMultipartForm() error = %v", err)
+			}
+			if got := r.FormValue("file_type"); got != "opus" {
+				t.Fatalf("file_type = %q, want opus", got)
+			}
+			if got := r.FormValue("duration"); got != "1250" {
+				t.Fatalf("duration = %q, want 1250", got)
+			}
+			file, header, err := r.FormFile("file")
+			if err != nil {
+				t.Fatalf("FormFile(file) error = %v", err)
+			}
+			defer file.Close()
+			data, err := io.ReadAll(file)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if header.Filename != "call.opus" || string(data) != "opus-recording" {
+				t.Fatalf("uploaded audio = %q / %q", header.Filename, data)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]string{"file_key": "file-test"}})
+		case "/open-apis/im/v1/messages":
+			if r.URL.Query().Get("receive_id_type") != "email" {
+				t.Fatalf("receive_id_type = %q", r.URL.Query().Get("receive_id_type"))
+			}
+			if err := json.NewDecoder(r.Body).Decode(&messageRequest); err != nil {
+				t.Fatalf("decode audio message: %v", err)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0})
+		default:
+			t.Fatalf("unexpected request path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	config := feishuForwardConfig{
+		Mode:            feishuModeAppBot,
+		AppID:           "cli_test",
+		AppSecret:       "app-secret",
+		RecipientIDType: "email",
+		RecipientID:     "receiver@example.com",
+		APIBaseURL:      server.URL,
+	}
+	if err := sendFeishuAudioMessage(context.Background(), config, opusPath, 1250); err != nil {
+		t.Fatalf("sendFeishuAudioMessage() error = %v", err)
+	}
+	if messageRequest["msg_type"] != "audio" || messageRequest["receive_id"] != "receiver@example.com" {
+		t.Fatalf("audio message = %#v", messageRequest)
+	}
+	if messageRequest["content"] != `{"duration":1250,"file_key":"file-test"}` {
+		t.Fatalf("audio content = %q", messageRequest["content"])
+	}
+}
+
+func TestWAVDurationMS(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "one-second.wav")
+	if err := writePCM16MonoWAV(path, make([]byte, 16000), 8000); err != nil {
+		t.Fatal(err)
+	}
+	duration, err := wavDurationMS(path)
+	if err != nil {
+		t.Fatalf("wavDurationMS() error = %v", err)
+	}
+	if duration != 1000 {
+		t.Fatalf("wavDurationMS() = %d, want 1000", duration)
+	}
+}
+
 func TestNormalizeAutomationConfigRejectsRecordingForwardWithoutRecording(t *testing.T) {
 	config := defaultAutomationConfig()
 	config.Calls.ForwardRecordingsToTelegram = true
@@ -223,6 +307,27 @@ func TestNormalizeAutomationConfigRejectsRecordingForwardWithoutRecording(t *tes
 	config.SMS.Telegram.ChatIDs = []string{"12345"}
 	if err := normalizeAutomationConfig(&config); err == nil {
 		t.Fatal("normalizeAutomationConfig() allowed forwarding with recording disabled")
+	}
+}
+
+func TestNormalizeAutomationConfigAllowsFeishuRecordingForwardWithoutSMSForwarding(t *testing.T) {
+	config := defaultAutomationConfig()
+	config.Calls.RecordCalls = true
+	config.Calls.RecordingNoticeOK = true
+	config.Calls.ForwardRecordingsToFeishu = true
+	config.SMS.Feishu = feishuForwardConfig{
+		Mode:            feishuModeAppBot,
+		AppID:           "cli_test",
+		AppSecret:       "app-secret",
+		RecipientIDType: "email",
+		RecipientID:     "receiver@example.com",
+		APIBaseURL:      "https://open.feishu.cn",
+	}
+	if err := normalizeAutomationConfig(&config); err != nil {
+		t.Fatalf("normalizeAutomationConfig() rejected Feishu recording-only forwarding: %v", err)
+	}
+	if config.SMS.Feishu.Enabled {
+		t.Fatal("recording-only forwarding unexpectedly enabled SMS forwarding")
 	}
 }
 

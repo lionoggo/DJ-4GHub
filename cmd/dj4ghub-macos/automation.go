@@ -93,6 +93,7 @@ type callAutomationConfig struct {
 	EnableUSBAudio              bool     `json:"enable_usb_audio"`
 	RecordCalls                 bool     `json:"record_calls"`
 	ForwardRecordingsToTelegram bool     `json:"forward_recordings_to_telegram"`
+	ForwardRecordingsToFeishu   bool     `json:"forward_recordings_to_feishu"`
 	RecordingDirectory          string   `json:"recording_directory"`
 	RecordingNoticeOK           bool     `json:"recording_notice_confirmed"`
 }
@@ -143,6 +144,7 @@ type callAutomationView struct {
 	EnableUSBAudio              bool     `json:"enable_usb_audio"`
 	RecordCalls                 bool     `json:"record_calls"`
 	ForwardRecordingsToTelegram bool     `json:"forward_recordings_to_telegram"`
+	ForwardRecordingsToFeishu   bool     `json:"forward_recordings_to_feishu"`
 	RecordingDirectory          string   `json:"recording_directory"`
 	RecordingNoticeOK           bool     `json:"recording_notice_confirmed"`
 }
@@ -165,6 +167,7 @@ type callHistoryItem struct {
 	EndedAt             time.Time `json:"ended_at,omitempty"`
 	RecordingName       string    `json:"recording_name,omitempty"`
 	ForwardedToTelegram bool      `json:"forwarded_to_telegram"`
+	ForwardedToFeishu   bool      `json:"forwarded_to_feishu"`
 }
 
 type callRecordingView struct {
@@ -174,6 +177,7 @@ type callRecordingView struct {
 	Size                int64     `json:"size"`
 	DownloadURL         string    `json:"download_url"`
 	ForwardedToTelegram bool      `json:"forwarded_to_telegram"`
+	ForwardedToFeishu   bool      `json:"forwarded_to_feishu"`
 }
 
 type callsView struct {
@@ -301,7 +305,7 @@ func normalizeAutomationConfig(config *automationConfig) error {
 	if config.SMS.Feishu.APIBaseURL == "" {
 		config.SMS.Feishu.APIBaseURL = defaultFeishuAPIBaseURL
 	}
-	if config.SMS.Feishu.Enabled {
+	if config.SMS.Feishu.Enabled || config.Calls.ForwardRecordingsToFeishu {
 		switch config.SMS.Feishu.Mode {
 		case feishuModeWebhook:
 			parsed, err := url.Parse(config.SMS.Feishu.WebhookURL)
@@ -371,6 +375,12 @@ func normalizeAutomationConfig(config *automationConfig) error {
 	}
 	if config.Calls.ForwardRecordingsToTelegram && !config.Calls.RecordCalls {
 		return errors.New("转发通话录音前，须先启用录制来电方语音")
+	}
+	if config.Calls.ForwardRecordingsToFeishu && !config.Calls.RecordCalls {
+		return errors.New("转发飞书语音前，须先启用录制来电方语音")
+	}
+	if config.Calls.ForwardRecordingsToFeishu && config.SMS.Feishu.Mode != feishuModeAppBot {
+		return errors.New("转发飞书语音需要使用企业应用机器人私聊")
 	}
 	return nil
 }
@@ -500,6 +510,7 @@ func automationConfigView(config automationConfig) automationView {
 			EnableUSBAudio:              config.Calls.EnableUSBAudio,
 			RecordCalls:                 config.Calls.RecordCalls,
 			ForwardRecordingsToTelegram: config.Calls.ForwardRecordingsToTelegram,
+			ForwardRecordingsToFeishu:   config.Calls.ForwardRecordingsToFeishu,
 			RecordingDirectory:          config.Calls.RecordingDirectory,
 			RecordingNoticeOK:           config.Calls.RecordingNoticeOK,
 		},
@@ -744,6 +755,7 @@ func (a *app) callRecordingViews(config callAutomationConfig, history []callHist
 			Size:                info.Size(),
 			DownloadURL:         "/api/calls/recordings/" + url.PathEscape(entry.Name()),
 			ForwardedToTelegram: historyItem.ForwardedToTelegram,
+			ForwardedToFeishu:   historyItem.ForwardedToFeishu,
 		})
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].RecordedAt.After(result[j].RecordedAt) })
@@ -938,7 +950,71 @@ func sendFeishuAppBotMessage(ctx context.Context, config feishuForwardConfig, te
 		"msg_type":   "text",
 		"content":    string(content),
 	}
-	return postJSONWithRetry(ctx, endpoint, payload, map[string]string{"Authorization": "Bearer " + accessToken})
+	return postFeishuJSONWithRetry(ctx, endpoint, payload, map[string]string{"Authorization": "Bearer " + accessToken})
+}
+
+// sendFeishuAudioMessage uploads a ready-to-play Opus recording and delivers
+// it as a native Feishu voice bubble. The Feishu message API cannot accept a
+// local path directly: the upload response's file_key is the message payload.
+func sendFeishuAudioMessage(ctx context.Context, config feishuForwardConfig, path string, durationMS int64) error {
+	accessToken, err := fetchFeishuTenantAccessToken(ctx, config)
+	if err != nil {
+		return err
+	}
+	fileKey, err := uploadFeishuAudio(ctx, config, accessToken, path, durationMS)
+	if err != nil {
+		return err
+	}
+	content, err := json.Marshal(map[string]any{"file_key": fileKey, "duration": durationMS})
+	if err != nil {
+		return fmt.Errorf("encode Feishu audio message: %w", err)
+	}
+	endpoint := strings.TrimRight(config.APIBaseURL, "/") + "/open-apis/im/v1/messages?receive_id_type=" + url.QueryEscape(config.RecipientIDType)
+	payload := map[string]string{
+		"receive_id": config.RecipientID,
+		"msg_type":   "audio",
+		"content":    string(content),
+	}
+	return postFeishuJSONWithRetry(ctx, endpoint, payload, map[string]string{"Authorization": "Bearer " + accessToken})
+}
+
+func uploadFeishuAudio(ctx context.Context, config feishuForwardConfig, accessToken, path string, durationMS int64) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read Opus recording: %w", err)
+	}
+	const maxFeishuUploadSize = 30 * 1024 * 1024
+	if len(data) == 0 || len(data) > maxFeishuUploadSize {
+		return "", fmt.Errorf("Feishu voice recording must be between 1 byte and %d MB", maxFeishuUploadSize/(1024*1024))
+	}
+	if durationMS <= 0 {
+		return "", errors.New("Feishu voice recording duration is invalid")
+	}
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	for key, value := range map[string]string{
+		"file_type": "opus",
+		"file_name": filepath.Base(path),
+		"duration":  strconv.FormatInt(durationMS, 10),
+	} {
+		if err := writer.WriteField(key, value); err != nil {
+			return "", err
+		}
+	}
+	part, err := writer.CreateFormFile("file", filepath.Base(path))
+	if err != nil {
+		return "", err
+	}
+	if _, err := part.Write(data); err != nil {
+		return "", err
+	}
+	if err := writer.Close(); err != nil {
+		return "", err
+	}
+
+	endpoint := strings.TrimRight(config.APIBaseURL, "/") + "/open-apis/im/v1/files"
+	return postFeishuMultipartForFileKey(ctx, endpoint, body.Bytes(), writer.FormDataContentType(), accessToken)
 }
 
 func fetchFeishuTenantAccessToken(ctx context.Context, config feishuForwardConfig) (string, error) {
@@ -1025,6 +1101,89 @@ func postJSONWithRetry(ctx context.Context, endpoint string, payload any, header
 			lastErr = err
 		}
 		cancel()
+		if attempt < 2 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(time.Duration(attempt+1) * time.Second):
+			}
+		}
+	}
+	return lastErr
+}
+
+func postFeishuJSONWithRetry(ctx context.Context, endpoint string, payload any, headers map[string]string) error {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	return postFeishuRequestWithRetry(ctx, endpoint, body, "application/json", headers, func(responseBody []byte) error {
+		var response struct {
+			Code int    `json:"code"`
+			Msg  string `json:"msg"`
+		}
+		if err := json.Unmarshal(responseBody, &response); err != nil {
+			return fmt.Errorf("decode Feishu message response: %w", err)
+		}
+		if response.Code != 0 {
+			return fmt.Errorf("Feishu message rejected: %s", strings.TrimSpace(response.Msg))
+		}
+		return nil
+	})
+}
+
+func postFeishuMultipartForFileKey(ctx context.Context, endpoint string, body []byte, contentType, accessToken string) (string, error) {
+	var fileKey string
+	err := postFeishuRequestWithRetry(ctx, endpoint, body, contentType, map[string]string{"Authorization": "Bearer " + accessToken}, func(responseBody []byte) error {
+		var response struct {
+			Code int    `json:"code"`
+			Msg  string `json:"msg"`
+			Data struct {
+				FileKey string `json:"file_key"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(responseBody, &response); err != nil {
+			return fmt.Errorf("decode Feishu audio upload response: %w", err)
+		}
+		if response.Code != 0 || strings.TrimSpace(response.Data.FileKey) == "" {
+			return fmt.Errorf("Feishu audio upload rejected: %s", strings.TrimSpace(response.Msg))
+		}
+		fileKey = strings.TrimSpace(response.Data.FileKey)
+		return nil
+	})
+	return fileKey, err
+}
+
+func postFeishuRequestWithRetry(ctx context.Context, endpoint string, body []byte, contentType string, headers map[string]string, verify func([]byte) error) error {
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		requestCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+		req, err := http.NewRequestWithContext(requestCtx, http.MethodPost, endpoint, bytes.NewReader(body))
+		if err == nil {
+			req.Header.Set("Content-Type", contentType)
+			for key, value := range headers {
+				req.Header.Set(key, value)
+			}
+			resp, doErr := http.DefaultClient.Do(req)
+			if doErr == nil {
+				responseBody, readErr := io.ReadAll(resp.Body)
+				resp.Body.Close()
+				if readErr != nil {
+					doErr = readErr
+				} else if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+					doErr = fmt.Errorf("Feishu HTTP %s", resp.Status)
+				} else {
+					doErr = verify(responseBody)
+				}
+			}
+			lastErr = doErr
+		} else {
+			lastErr = err
+		}
+		cancel()
+		if lastErr == nil {
+			return nil
+		}
 		if attempt < 2 {
 			select {
 			case <-ctx.Done():
@@ -1536,10 +1695,17 @@ func (a *app) markCallRecording(id uint64, name string) {
 	a.updateCallHistoryLocked(id, func(item *callHistoryItem) { item.RecordingName = name })
 }
 
-func (a *app) markCallRecordingForwarded(id uint64) {
+func (a *app) markCallRecordingForwarded(id uint64, channel string) {
 	a.callMu.Lock()
 	defer a.callMu.Unlock()
-	a.updateCallHistoryLocked(id, func(item *callHistoryItem) { item.ForwardedToTelegram = true })
+	a.updateCallHistoryLocked(id, func(item *callHistoryItem) {
+		switch channel {
+		case "telegram":
+			item.ForwardedToTelegram = true
+		case "feishu":
+			item.ForwardedToFeishu = true
+		}
+	})
 }
 
 func (a *app) startCallRecording(id uint64, config callAutomationConfig) error {
@@ -1855,7 +2021,7 @@ func (a *app) forwardCallRecording(path, number string, recordedAt time.Time, ca
 		log.Printf("call recording forwarding configuration unavailable: %v", err)
 		return
 	}
-	if !config.Calls.ForwardRecordingsToTelegram {
+	if !config.Calls.ForwardRecordingsToTelegram && !config.Calls.ForwardRecordingsToFeishu {
 		return
 	}
 	if recordedAt.IsZero() {
@@ -1866,17 +2032,133 @@ func (a *app) forwardCallRecording(path, number string, recordedAt time.Time, ca
 		caller = "未知号码"
 	}
 	caption := fmt.Sprintf("【DJ 4G Hub】来电录音\n号码：%s\n录制时间：%s", caller, recordedAt.Local().Format("2006-01-02 15:04:05"))
-	forwarded := false
-	for _, chatID := range config.SMS.Telegram.ChatIDs {
-		if err := sendTelegramDocument(context.Background(), config.SMS.Telegram.BotToken, chatID, path, caption); err != nil {
-			log.Printf("Telegram call recording forwarding to %s failed: %v", chatID, err)
-			continue
+	if config.Calls.ForwardRecordingsToTelegram {
+		forwarded := false
+		for _, chatID := range config.SMS.Telegram.ChatIDs {
+			if err := sendTelegramDocument(context.Background(), config.SMS.Telegram.BotToken, chatID, path, caption); err != nil {
+				log.Printf("Telegram call recording forwarding to %s failed: %v", chatID, err)
+				continue
+			}
+			forwarded = true
+			log.Printf("call recording forwarded to Telegram chat %s", chatID)
 		}
-		forwarded = true
-		log.Printf("call recording forwarded to Telegram chat %s", chatID)
+		if forwarded {
+			a.markCallRecordingForwarded(callID, "telegram")
+		}
 	}
-	if forwarded {
-		a.markCallRecordingForwarded(callID)
+	if !config.Calls.ForwardRecordingsToFeishu {
+		return
+	}
+	forwardContext, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	opusPath, durationMS, cleanup, err := transcodeRecordingToOpus(forwardContext, path)
+	if err != nil {
+		log.Printf("Feishu call recording transcode failed: %v", err)
+		return
+	}
+	defer cleanup()
+	if err := sendFeishuAudioMessage(forwardContext, config.SMS.Feishu, opusPath, durationMS); err != nil {
+		log.Printf("Feishu call recording forwarding failed: %v", err)
+		return
+	}
+	a.markCallRecordingForwarded(callID, "feishu")
+	log.Printf("call recording forwarded to Feishu as native audio")
+}
+
+func transcodeRecordingToOpus(ctx context.Context, inputPath string) (string, int64, func(), error) {
+	durationMS, err := wavDurationMS(inputPath)
+	if err != nil {
+		return "", 0, nil, fmt.Errorf("read WAV duration: %w", err)
+	}
+	ffmpeg, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		return "", 0, nil, errors.New("FFmpeg is required for Feishu voice forwarding")
+	}
+	file, err := os.CreateTemp(filepath.Dir(inputPath), ".dj4ghub-feishu-*.opus")
+	if err != nil {
+		return "", 0, nil, fmt.Errorf("create temporary Opus file: %w", err)
+	}
+	opusPath := file.Name()
+	if err := file.Close(); err != nil {
+		_ = os.Remove(opusPath)
+		return "", 0, nil, err
+	}
+	cleanup := func() { _ = os.Remove(opusPath) }
+	command := exec.CommandContext(ctx, ffmpeg,
+		"-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-i", inputPath,
+		"-vn", "-map_metadata", "-1", "-ac", "1", "-ar", "16000",
+		"-c:a", "libopus", "-b:a", "24k", opusPath,
+	)
+	if output, err := command.CombinedOutput(); err != nil {
+		cleanup()
+		detail := strings.TrimSpace(string(output))
+		if len(detail) > 500 {
+			detail = detail[:500]
+		}
+		if detail == "" {
+			return "", 0, nil, fmt.Errorf("convert WAV to Opus: %w", err)
+		}
+		return "", 0, nil, fmt.Errorf("convert WAV to Opus: %w: %s", err, detail)
+	}
+	return opusPath, durationMS, cleanup, nil
+}
+
+func wavDurationMS(path string) (int64, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return 0, err
+	}
+	defer file.Close()
+	header := make([]byte, 12)
+	if _, err := io.ReadFull(file, header); err != nil {
+		return 0, err
+	}
+	if string(header[0:4]) != "RIFF" || string(header[8:12]) != "WAVE" {
+		return 0, errors.New("recording is not a RIFF/WAV file")
+	}
+	var sampleRate uint32
+	var blockAlign uint16
+	for {
+		chunkHeader := make([]byte, 8)
+		if _, err := io.ReadFull(file, chunkHeader); err != nil {
+			return 0, errors.New("WAV is missing audio data")
+		}
+		size := binary.LittleEndian.Uint32(chunkHeader[4:8])
+		switch string(chunkHeader[0:4]) {
+		case "fmt ":
+			if size < 16 {
+				return 0, errors.New("WAV format chunk is invalid")
+			}
+			format := make([]byte, 16)
+			if _, err := io.ReadFull(file, format); err != nil {
+				return 0, err
+			}
+			sampleRate = binary.LittleEndian.Uint32(format[4:8])
+			blockAlign = binary.LittleEndian.Uint16(format[12:14])
+			if skip := int64(size - 16); skip > 0 {
+				if _, err := file.Seek(skip, io.SeekCurrent); err != nil {
+					return 0, err
+				}
+			}
+		case "data":
+			if sampleRate == 0 || blockAlign == 0 {
+				return 0, errors.New("WAV format is missing")
+			}
+			milliseconds := int64(size) * 1000 / int64(sampleRate*uint32(blockAlign))
+			if milliseconds <= 0 {
+				return 0, errors.New("WAV has no audible duration")
+			}
+			return milliseconds, nil
+		default:
+			if _, err := file.Seek(int64(size), io.SeekCurrent); err != nil {
+				return 0, err
+			}
+		}
+		if size%2 != 0 {
+			if _, err := file.Seek(1, io.SeekCurrent); err != nil {
+				return 0, err
+			}
+		}
 	}
 }
 

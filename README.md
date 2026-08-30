@@ -74,7 +74,7 @@ DJ 4G Hub 最初从 [ZenGeekLabs/DJOneHub](https://github.com/ZenGeekLabs/DJOneH
 | USB 4G 上网 | 可用 | 切换 USB 网卡模式并检查 macOS 网络接口 |
 | 联网活动 | 可用 | 展示连接元数据，不读取 HTTPS 页面内容 |
 | AT 调试 | 可用 | 直接向模块发送 AT 指令 |
-| 自动接听与来电录音 | 可用 | 支持白名单、提示语、来电方语音录制及 Telegram WAV 附件转发；飞书录音转发规划中 |
+| 自动接听与来电录音 | 可用 | 支持白名单、提示语、来电方语音录制、Telegram WAV 附件转发及飞书原生语音转发 |
 | Apple Silicon | 可用 | 当前发行包面向 macOS 13+、M 系列芯片 |
 | Intel Mac | 未验证 | 尚未发布经过真机验证的发行包 |
 | Linux / QNAP NAS | 实机验证中 | 支持标准 Quectel 串口，并为 DJI/Baiwang `2ca3:4006` 提供原生 Linux USB 适配；TS-464C2 使用 `linux/amd64`。UAC 提示音与录音需在容器中以实际设备验证 |

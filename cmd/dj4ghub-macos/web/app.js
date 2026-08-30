@@ -1356,6 +1356,7 @@ async function loadAutomation() {
     $("#automation-enable-uac").checked = Boolean(calls.enable_usb_audio);
     $("#automation-record-calls").checked = Boolean(calls.record_calls);
     $("#automation-forward-recordings-telegram").checked = Boolean(calls.forward_recordings_to_telegram);
+    $("#automation-forward-recordings-feishu").checked = Boolean(calls.forward_recordings_to_feishu);
     $("#automation-recording-directory").value = calls.recording_directory || "";
     $("#automation-recording-notice").checked = Boolean(calls.recording_notice_confirmed);
   } catch (error) {
@@ -1454,7 +1455,7 @@ function renderCallRecordings(recordings) {
   const list = $("#call-recordings");
   const items = Array.isArray(recordings) ? recordings : [];
   $("#call-recordings-count").textContent = `${items.length} 个`;
-  const signature = items.map((item) => `${item.name}:${item.size}:${item.forwarded_to_telegram}`).join("|");
+  const signature = items.map((item) => `${item.name}:${item.size}:${item.forwarded_to_telegram}:${item.forwarded_to_feishu}`).join("|");
   if (signature === callRecordingsSignature) return;
   callRecordingsSignature = signature;
   if (!items.length) {
@@ -1480,6 +1481,11 @@ function renderCallRecordings(recordings) {
     if (item.forwarded_to_telegram) {
       const forwarded = document.createElement("span");
       forwarded.textContent = "已转 Telegram";
+      line.append(forwarded);
+    }
+    if (item.forwarded_to_feishu) {
+      const forwarded = document.createElement("span");
+      forwarded.textContent = "已转飞书语音";
       line.append(forwarded);
     }
     const meta = document.createElement("small");
@@ -1553,6 +1559,7 @@ function automationPayload() {
       enable_usb_audio: $("#automation-enable-uac").checked,
       record_calls: $("#automation-record-calls").checked,
       forward_recordings_to_telegram: $("#automation-forward-recordings-telegram").checked,
+      forward_recordings_to_feishu: $("#automation-forward-recordings-feishu").checked,
       recording_directory: $("#automation-recording-directory").value.trim(),
       recording_notice_confirmed: $("#automation-recording-notice").checked,
     },
