@@ -10,7 +10,8 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
 
 FROM ${DOCKER_REGISTRY}/library/debian:bookworm-slim
 
-RUN apt-get update \
+RUN sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/debian.sources \
+    && apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates espeak-ng libasound2 alsa-utils adb opus-tools \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build /out/dj4ghub /usr/local/bin/dj4ghub
