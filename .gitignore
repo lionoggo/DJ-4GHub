@@ -1,0 +1,20 @@
+.DS_Store
+._*
+
+# Build outputs
+/dist/
+/bin/
+*.test
+*.out
+
+# Local runtime data and logs
+*.log
+*.pid
+
+# Editor files
+.idea/
+.vscode/
+*.swp
+
+# Frontend dependencies are not used by the native DJ 4G Hub page
+node_modules/

@@ -1,0 +1,249 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestParseCLCCCalls(t *testing.T) {
+	response := "+CLCC: 1,1,4,0,0,\"+8613812345678\",145\r\nOK"
+	calls := parseCLCCCalls(response)
+	if len(calls) != 1 {
+		t.Fatalf("parseCLCCCalls() count = %d, want 1", len(calls))
+	}
+	if !calls[0].Incoming {
+		t.Fatal("parseCLCCCalls() incoming = false, want true")
+	}
+	if calls[0].Number != "+8613812345678" {
+		t.Fatalf("parseCLCCCalls() number = %q", calls[0].Number)
+	}
+}
+
+func TestParseCLCCCallsActiveCallIsNotIncoming(t *testing.T) {
+	response := "+CLCC: 1,1,0,0,0,\"+8613812345678\",145\r\nOK"
+	calls := parseCLCCCalls(response)
+	if len(calls) != 1 || calls[0].Incoming {
+		t.Fatalf("parseCLCCCalls() = %#v, want active non-incoming call", calls)
+	}
+}
+
+func TestNormalizeAutomationConfig(t *testing.T) {
+	config := defaultAutomationConfig()
+	config.SMS.RecipientNumbers = []string{" +86 138-1234-5678 ", "+8613812345678"}
+	config.SMS.SenderAllowlist = []string{"10086", " 10010 "}
+	config.Calls.AllowedNumbers = []string{" +86 138-1234-5678 "}
+	config.Calls.PromptFile = "/tmp/answer.wav"
+	if err := normalizeAutomationConfig(&config); err != nil {
+		t.Fatalf("normalizeAutomationConfig() error = %v", err)
+	}
+	if got := strings.Join(config.SMS.RecipientNumbers, ","); got != "+8613812345678" {
+		t.Fatalf("recipient numbers = %q", got)
+	}
+	if got := strings.Join(config.SMS.SenderAllowlist, ","); got != "10010,10086" {
+		t.Fatalf("sender allowlist = %q", got)
+	}
+	if !numberAllowed("+86 138 1234 5678", config.Calls.AllowedNumbers) {
+		t.Fatal("numberAllowed() did not normalize a formatted incoming number")
+	}
+}
+
+func TestNormalizeAutomationConfigRejectsIncompleteTelegram(t *testing.T) {
+	config := defaultAutomationConfig()
+	config.SMS.Telegram.Enabled = true
+	config.SMS.Telegram.ChatIDs = []string{"12345"}
+	if err := normalizeAutomationConfig(&config); err == nil {
+		t.Fatal("normalizeAutomationConfig() accepted Telegram without Bot Token")
+	}
+}
+
+func TestNormalizeAutomationConfigAllowsRecordingForwardWithoutSMSForwarding(t *testing.T) {
+	config := defaultAutomationConfig()
+	config.Calls.RecordCalls = true
+	config.Calls.RecordingNoticeOK = true
+	config.Calls.ForwardRecordingsToTelegram = true
+	config.SMS.Telegram.BotToken = "123:recording-token"
+	config.SMS.Telegram.ChatIDs = []string{"12345"}
+	if err := normalizeAutomationConfig(&config); err != nil {
+		t.Fatalf("normalizeAutomationConfig() rejected recording-only Telegram forwarding: %v", err)
+	}
+	if config.SMS.Telegram.Enabled {
+		t.Fatal("recording-only forwarding unexpectedly enabled SMS forwarding")
+	}
+}
+
+func TestNormalizeAutomationConfigRejectsRecordingForwardWithoutRecording(t *testing.T) {
+	config := defaultAutomationConfig()
+	config.Calls.ForwardRecordingsToTelegram = true
+	config.SMS.Telegram.BotToken = "123:recording-token"
+	config.SMS.Telegram.ChatIDs = []string{"12345"}
+	if err := normalizeAutomationConfig(&config); err == nil {
+		t.Fatal("normalizeAutomationConfig() allowed forwarding with recording disabled")
+	}
+}
+
+func TestRenderSMSForwardText(t *testing.T) {
+	item := receivedSMS{
+		Sender:    "10086",
+		Content:   "验证码是 482913",
+		Code:      "482913",
+		Timestamp: time.Date(2026, 8, 30, 12, 34, 56, 0, time.Local),
+	}
+	got := renderSMSForwardText("{{sender}}|{{content}}|{{code}}", item)
+	if got != "10086|验证码是 482913|482913" {
+		t.Fatalf("renderSMSForwardText() = %q", got)
+	}
+}
+
+func TestModulePromptPlaybackUsesFarEndAudioRoute(t *testing.T) {
+	commands := modulePromptPlaybackCommands()
+	if len(commands) == 0 {
+		t.Fatal("modulePromptPlaybackCommands() returned no commands")
+	}
+	for _, command := range commands {
+		if !strings.HasSuffix(command, ",0,1,1") {
+			t.Fatalf("module prompt command = %q, want far-end QPSND route", command)
+		}
+	}
+}
+
+func TestNormalizeAutomationConfigRequiresRecordingNotice(t *testing.T) {
+	config := defaultAutomationConfig()
+	config.Calls.RecordCalls = true
+	if err := normalizeAutomationConfig(&config); err == nil {
+		t.Fatal("normalizeAutomationConfig() allowed recording without a notice confirmation")
+	}
+	config.Calls.RecordingNoticeOK = true
+	if err := normalizeAutomationConfig(&config); err != nil {
+		t.Fatalf("normalizeAutomationConfig() rejected acknowledged recording: %v", err)
+	}
+}
+
+func TestNormalizeAutomationConfigAcceptsTypedPrompt(t *testing.T) {
+	config := defaultAutomationConfig()
+	config.Calls.PromptText = "  请留言。  "
+	if err := normalizeAutomationConfig(&config); err != nil {
+		t.Fatalf("normalizeAutomationConfig() typed prompt error = %v", err)
+	}
+	if config.Calls.PromptText != "请留言。" {
+		t.Fatalf("prompt text = %q", config.Calls.PromptText)
+	}
+}
+
+func TestParseModuleFileSize(t *testing.T) {
+	size, err := parseModuleFileSize("+QFLST: \"dj4ghub_call.wav\",32768\r\nOK")
+	if err != nil || size != 32768 {
+		t.Fatalf("parseModuleFileSize() = %d, %v", size, err)
+	}
+}
+
+func TestCallRecordingModuleFilename(t *testing.T) {
+	got := callRecordingModuleFilename(7, time.Date(2026, 8, 30, 12, 34, 56, 0, time.Local))
+	if got != "dj4ghub_call_20260830_123456_7.wav" {
+		t.Fatalf("callRecordingModuleFilename() = %q", got)
+	}
+}
+
+func TestSendTelegramDocumentUsesMultipartAttachment(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "call.wav")
+	if err := os.WriteFile(path, []byte("RIFFtest-audio"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Fatalf("method = %s, want POST", r.Method)
+		}
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Fatalf("ParseMultipartForm() error = %v", err)
+		}
+		if got := r.FormValue("chat_id"); got != "12345" {
+			t.Fatalf("chat_id = %q", got)
+		}
+		if got := r.FormValue("caption"); got != "来电录音" {
+			t.Fatalf("caption = %q", got)
+		}
+		file, header, err := r.FormFile("document")
+		if err != nil {
+			t.Fatalf("FormFile(document) error = %v", err)
+		}
+		defer file.Close()
+		if header.Filename != "call.wav" {
+			t.Fatalf("filename = %q", header.Filename)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		actual := make([]byte, len(data))
+		if _, err := file.Read(actual); err != nil {
+			t.Fatalf("read uploaded document: %v", err)
+		}
+		if string(actual) != string(data) {
+			t.Fatalf("uploaded document = %q, want %q", actual, data)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	if err := sendTelegramDocumentToEndpoint(context.Background(), server.URL, "12345", path, "来电录音"); err != nil {
+		t.Fatalf("sendTelegramDocumentToEndpoint() error = %v", err)
+	}
+}
+
+func TestAutomationAPIHidesAndPreservesSecrets(t *testing.T) {
+	instance := &app{automationPath: filepath.Join(t.TempDir(), "automation.json")}
+	initial := automationConfig{
+		SMS: smsForwardConfig{
+			Enabled: true,
+			Telegram: telegramForwardConfig{
+				Enabled:  true,
+				BotToken: "123:secret-token",
+				ChatIDs:  []string{"123456"},
+			},
+		},
+		Calls: callAutomationConfig{AnswerAfterSeconds: 2, HangupAfterSeconds: 12},
+	}
+	body, err := json.Marshal(initial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPut, "/api/automation", strings.NewReader(string(body)))
+	response := httptest.NewRecorder()
+	instance.updateAutomation(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("updateAutomation() status = %d, body=%s", response.Code, response.Body.String())
+	}
+
+	getResponse := httptest.NewRecorder()
+	instance.getAutomation(getResponse, httptest.NewRequest(http.MethodGet, "/api/automation", nil))
+	if strings.Contains(getResponse.Body.String(), "secret-token") {
+		t.Fatalf("getAutomation() exposed a saved secret: %s", getResponse.Body.String())
+	}
+	if !strings.Contains(getResponse.Body.String(), `"bot_token_set":true`) {
+		t.Fatalf("getAutomation() did not report that a token is present: %s", getResponse.Body.String())
+	}
+
+	initial.SMS.Telegram.BotToken = ""
+	body, err = json.Marshal(initial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response = httptest.NewRecorder()
+	instance.updateAutomation(response, httptest.NewRequest(http.MethodPut, "/api/automation", strings.NewReader(string(body))))
+	if response.Code != http.StatusOK {
+		t.Fatalf("blank-token update status = %d, body=%s", response.Code, response.Body.String())
+	}
+	config, err := instance.automationSnapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.SMS.Telegram.BotToken != "123:secret-token" {
+		t.Fatalf("blank-token update erased existing token: %q", config.SMS.Telegram.BotToken)
+	}
+}
