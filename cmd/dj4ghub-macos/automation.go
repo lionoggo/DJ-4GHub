@@ -1869,7 +1869,10 @@ type clccCall struct {
 	Incoming bool
 }
 
-var clccPattern = regexp.MustCompile(`\+CLCC:\s*\d+\s*,\s*(\d+)\s*,\s*(\d+)(?:\s*,\s*[^,]*){2}(?:\s*,\s*"([^"]*)")?`)
+// +CLCC fields are id, direction, state, mode, multiparty, number, type.
+// LTE modules can report their always-on PS data session here with mode=1;
+// only mode=0 represents a voice call and may keep the call workflow alive.
+var clccPattern = regexp.MustCompile(`\+CLCC:\s*\d+\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*\d+(?:\s*,\s*"([^"]*)")?`)
 
 func parseCLCCCalls(response string) []clccCall {
 	matches := clccPattern.FindAllStringSubmatch(response, -1)
@@ -1877,7 +1880,11 @@ func parseCLCCCalls(response string) []clccCall {
 	for _, match := range matches {
 		direction, _ := strconv.Atoi(match[1])
 		state, _ := strconv.Atoi(match[2])
-		result = append(result, clccCall{Number: normalizePhone(match[3]), Incoming: direction == 1 && (state == 4 || state == 5)})
+		mode, _ := strconv.Atoi(match[3])
+		if mode != 0 {
+			continue
+		}
+		result = append(result, clccCall{Number: normalizePhone(match[4]), Incoming: direction == 1 && (state == 4 || state == 5)})
 	}
 	return result
 }

@@ -89,6 +89,21 @@ func TestParseCLCCCallsActiveCallIsNotIncoming(t *testing.T) {
 	}
 }
 
+func TestParseCLCCCallsIgnoresLTEDataSession(t *testing.T) {
+	response := "+CLCC: 1,0,0,1,0,\"\",128\r\nOK"
+	if calls := parseCLCCCalls(response); len(calls) != 0 {
+		t.Fatalf("parseCLCCCalls() = %#v, want no voice calls", calls)
+	}
+}
+
+func TestParseCLCCCallsKeepsVoiceAlongsideLTEDataSession(t *testing.T) {
+	response := "+CLCC: 1,0,0,1,0,\"\",128\r\n+CLCC: 2,1,4,0,0,\"+8613812345678\",145\r\nOK"
+	calls := parseCLCCCalls(response)
+	if len(calls) != 1 || !calls[0].Incoming || calls[0].Number != "+8613812345678" {
+		t.Fatalf("parseCLCCCalls() = %#v, want one incoming voice call", calls)
+	}
+}
+
 func TestNormalizeAutomationConfig(t *testing.T) {
 	config := defaultAutomationConfig()
 	config.SMS.RecipientNumbers = []string{" +86 138-1234-5678 ", "+8613812345678"}
