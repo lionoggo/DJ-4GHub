@@ -203,6 +203,36 @@ func TestNormalizeAutomationConfigRequiresFileForFilePromptSource(t *testing.T) 
 	}
 }
 
+func TestAutomationAPIFilePromptSourcePreservesPreparedAudio(t *testing.T) {
+	instance := &app{automationPath: filepath.Join(t.TempDir(), "automation.json")}
+	incoming := automationConfig{
+		SMS: smsForwardConfig{TextTemplate: defaultSMSForwardTemplate},
+		Calls: callAutomationConfig{
+			AnswerAfterSeconds: 2,
+			HangupAfterSeconds: 12,
+			PromptSource:       promptSourceFile,
+			PromptText:         "这是用于说明当前提示语的文本。",
+			PromptFile:         "/tmp/prepared-answer.wav",
+		},
+	}
+	body, err := json.Marshal(incoming)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	instance.updateAutomation(response, httptest.NewRequest(http.MethodPut, "/api/automation", strings.NewReader(string(body))))
+	if response.Code != http.StatusOK {
+		t.Fatalf("updateAutomation() status = %d, body=%s", response.Code, response.Body.String())
+	}
+	stored, err := instance.automationSnapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Calls.PromptSource != promptSourceFile || stored.Calls.PromptFile != "/tmp/prepared-answer.wav" {
+		t.Fatalf("prepared prompt was changed: source=%q file=%q", stored.Calls.PromptSource, stored.Calls.PromptFile)
+	}
+}
+
 func TestParseModuleFileSize(t *testing.T) {
 	size, err := parseModuleFileSize("+QFLST: \"dj4ghub_call.wav\",32768\r\nOK")
 	if err != nil || size != 32768 {
