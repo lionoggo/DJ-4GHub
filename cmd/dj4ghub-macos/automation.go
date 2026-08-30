@@ -2070,9 +2070,9 @@ func transcodeRecordingToOpus(ctx context.Context, inputPath string) (string, in
 	if err != nil {
 		return "", 0, nil, fmt.Errorf("read WAV duration: %w", err)
 	}
-	ffmpeg, err := exec.LookPath("ffmpeg")
+	opusenc, err := exec.LookPath("opusenc")
 	if err != nil {
-		return "", 0, nil, errors.New("FFmpeg is required for Feishu voice forwarding")
+		return "", 0, nil, errors.New("opus-tools is required for Feishu voice forwarding")
 	}
 	file, err := os.CreateTemp(filepath.Dir(inputPath), ".dj4ghub-feishu-*.opus")
 	if err != nil {
@@ -2084,11 +2084,7 @@ func transcodeRecordingToOpus(ctx context.Context, inputPath string) (string, in
 		return "", 0, nil, err
 	}
 	cleanup := func() { _ = os.Remove(opusPath) }
-	command := exec.CommandContext(ctx, ffmpeg,
-		"-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-i", inputPath,
-		"-vn", "-map_metadata", "-1", "-ac", "1", "-ar", "16000",
-		"-c:a", "libopus", "-b:a", "24k", opusPath,
-	)
+	command := exec.CommandContext(ctx, opusenc, "--quiet", "--bitrate", "24", "--downmix-mono", inputPath, opusPath)
 	if output, err := command.CombinedOutput(); err != nil {
 		cleanup()
 		detail := strings.TrimSpace(string(output))
@@ -2096,9 +2092,9 @@ func transcodeRecordingToOpus(ctx context.Context, inputPath string) (string, in
 			detail = detail[:500]
 		}
 		if detail == "" {
-			return "", 0, nil, fmt.Errorf("convert WAV to Opus: %w", err)
+			return "", 0, nil, fmt.Errorf("encode WAV as Opus: %w", err)
 		}
-		return "", 0, nil, fmt.Errorf("convert WAV to Opus: %w: %s", err, detail)
+		return "", 0, nil, fmt.Errorf("encode WAV as Opus: %w: %s", err, detail)
 	}
 	return opusPath, durationMS, cleanup, nil
 }

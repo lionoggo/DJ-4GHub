@@ -11,7 +11,7 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
 FROM ${DOCKER_REGISTRY}/library/debian:bookworm-slim
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates espeak-ng libasound2 alsa-utils adb ffmpeg \
+    && apt-get install -y --no-install-recommends ca-certificates espeak-ng libasound2 alsa-utils adb opus-tools \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build /out/dj4ghub /usr/local/bin/dj4ghub
 COPY packaging/qnap/dj4ghub-uac-call-recorder /usr/local/bin/dj4ghub-uac-call-recorder
