@@ -1114,6 +1114,7 @@ type DeviceStatus struct {
 	Firmware        string           `json:"firmware"`
 	ICCID           string           `json:"iccid"`
 	IMSI            string           `json:"imsi"`
+	PhoneNumber     string           `json:"phone_number,omitempty"`
 	NativeSPN       string           `json:"native_spn,omitempty"`
 	NativeMCC       string           `json:"native_mcc,omitempty"`
 	NativeMNC       string           `json:"native_mnc,omitempty"`

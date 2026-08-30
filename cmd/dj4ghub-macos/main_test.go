@@ -67,6 +67,24 @@ func TestParseUSBATOperator(t *testing.T) {
 	}
 }
 
+func TestParseUSBATCNUM(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		response string
+		want     string
+	}{
+		{name: "standard response", response: "AT+CNUM\r\n+CNUM: \"\",\"+8613800138000\",145\r\nOK", want: "+8613800138000"},
+		{name: "empty SIM number", response: "AT+CNUM\r\nOK", want: ""},
+		{name: "malformed response", response: "+CNUM: 1,2\r\nOK", want: ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := parseUSBATCNUM(tt.response); got != tt.want {
+				t.Fatalf("parseUSBATCNUM(%q) = %q, want %q", tt.response, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestInitUSBATESIMManagerAfterDelayedUSBOpen(t *testing.T) {
 	instance := &app{}
 

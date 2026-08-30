@@ -389,6 +389,103 @@ function maskPhoneNumber(value) {
   }).join("");
 }
 
+function physicalSIMFact(label, value, detail = "", tone = "") {
+  const item = document.createElement("div");
+  item.className = `physical-sim-fact ${tone}`.trim();
+  const caption = document.createElement("span");
+  caption.textContent = label;
+  const primary = document.createElement("strong");
+  primary.textContent = value || "--";
+  item.append(caption, primary);
+  if (detail) {
+    const hint = document.createElement("small");
+    hint.textContent = detail;
+    item.append(hint);
+  }
+  return item;
+}
+
+function physicalSIMIdentifier(label, value, fallback = "未读取", absentDetail = "") {
+  const text = String(value || "").trim();
+  if (!text) return physicalSIMFact(label, fallback, absentDetail);
+  const item = document.createElement("div");
+  item.className = "physical-sim-fact physical-sim-identifier";
+  const caption = document.createElement("span");
+  caption.textContent = label;
+  const primary = document.createElement("code");
+  const isPhone = label.includes("号码");
+  primary.textContent = isPhone ? maskPhoneNumber(text) : maskIdentifier(text);
+  const actions = document.createElement("div");
+  actions.className = "physical-sim-identifier-actions";
+  const reveal = document.createElement("button");
+  reveal.className = "secondary compact";
+  reveal.type = "button";
+  reveal.textContent = "显示";
+  reveal.addEventListener("click", () => {
+    const isMasked = reveal.textContent === "显示";
+    primary.textContent = isMasked ? text : (isPhone ? maskPhoneNumber(text) : maskIdentifier(text));
+    reveal.textContent = isMasked ? "隐藏" : "显示";
+  });
+  const copy = document.createElement("button");
+  copy.className = "secondary compact";
+  copy.type = "button";
+  copy.textContent = "复制";
+  copy.addEventListener("click", () => copyIdentifier(text, label));
+  actions.append(reveal, copy);
+  item.append(caption, primary, actions);
+  return item;
+}
+
+function setCardViewHeading(mode) {
+  const physical = mode === "physical";
+  $("#card-view-kicker").textContent = physical ? "PHYSICAL SIM" : "EUICC";
+  $("#card-view-title").textContent = physical ? "实体 SIM" : "eSIM / 卡片";
+  $("#card-view-description").textContent = physical
+    ? "查看当前 SIM 的身份、网络接管与模块读取状态。"
+    : "管理卡内 Profile，核对模块实际接管状态。";
+}
+
+function renderPhysicalSIMStatus(status, readError = "") {
+  const page = $("#physical-sim-page");
+  const inserted = Boolean(status?.sim_inserted);
+  const registered = [1, 5].includes(Number(status?.reg_status));
+  const registration = status?.reg_status_text || (inserted ? "等待注册" : "未检测到 SIM");
+  const operator = displayOperatorName(status?.operator);
+  const signal = Number(status?.signal_dbm || 0);
+  const signalText = signal ? `${signal} dBm` : "暂未测得";
+  const networkMode = [status?.network_mode, status?.network_duplex].filter(Boolean).join(" · ") || "暂未识别";
+  const band = [status?.radio_band, status?.radio_channel ? `信道 ${status.radio_channel}` : ""].filter(Boolean).join(" · ") || "--";
+  const workMode = Object.prototype.hasOwnProperty.call(status || {}, "usbnet_mode")
+    ? displayWorkMode(status.usbnet_mode).label
+    : "待读取";
+
+  setCardViewHeading("physical");
+  page.hidden = false;
+  $("#physical-sim-headline").textContent = inserted ? "实体 SIM 已识别" : "未检测到可用实体 SIM";
+  $("#physical-sim-description").textContent = inserted
+    ? "卡片已由模块读取，可继续在短信、通话和网络工作台使用。"
+    : "请检查卡槽、SIM 卡方向，或重新刷新模块状态。";
+  $("#physical-sim-card-status").textContent = inserted ? "已就绪" : "未就绪";
+  $("#physical-sim-card-detail").textContent = readError
+    ? `状态读取不完整：${readError}`
+    : (registered ? `${registration} · 已接入 ${operator}` : `${registration} · 正在等待蜂窝网络`);
+  $("#physical-sim-eyebrow").textContent = inserted ? "PHYSICAL SIM · READY" : "PHYSICAL SIM · CHECK";
+
+  $("#physical-sim-identity").replaceChildren(
+    physicalSIMIdentifier("卡号 ICCID", status?.iccid, "未读取到 ICCID"),
+    physicalSIMIdentifier("用户 IMSI", status?.imsi, "未读取到 IMSI"),
+    physicalSIMIdentifier("本机号码", status?.phone_number, "SIM 未提供号码", "运营商不一定会将本机号码写入 SIM"),
+    physicalSIMFact("SIM 解锁", inserted ? "PIN 已就绪" : "需要检查", inserted ? "已通过模块卡状态检查" : "未检测到 READY 状态", inserted ? "is-good" : "is-warn"),
+  );
+  $("#physical-sim-network").replaceChildren(
+    physicalSIMFact("当前运营商", operator, registered ? "当前网络已注册" : "尚未完成网络注册", registered ? "is-good" : "is-warn"),
+    physicalSIMFact("蜂窝注册", registration, networkMode, registered ? "is-good" : "is-warn"),
+    physicalSIMFact("信号质量", signalText, signal ? "来自当前 RSSI 读数" : "模块暂未返回 RSSI", signalTone(signal) ? `is-${signalTone(signal)}` : ""),
+    physicalSIMFact("频段 / 信道", band, `工作模式：${workMode}`),
+    physicalSIMFact("模块固件", status?.firmware || "未读取", status?.imei ? `IMEI ${maskIdentifier(status.imei)}` : ""),
+  );
+}
+
 async function copyIdentifier(value, label) {
   try {
     await navigator.clipboard.writeText(value);
@@ -943,6 +1040,9 @@ async function loadESIM() {
   const runtime = $("#esim-runtime-section");
   const profilePanel = $("#esim-profile-panel");
   const phonebook = $("#esim-phonebook-section");
+  const physicalSIM = $("#physical-sim-page");
+  setCardViewHeading("esim");
+  physicalSIM.hidden = true;
   $("#esim-chip").hidden = true;
   $("#esim-chip").replaceChildren();
   runtime.hidden = true;
@@ -955,12 +1055,21 @@ async function loadESIM() {
   try {
     const overview = await api("/api/esim");
     if (overview.card_type === "physical_sim") {
-      status.textContent = overview.message;
-      list.textContent = overview.message;
+      status.textContent = "已识别实体 SIM，正在读取卡片状态";
       download.hidden = true;
       profilePanel.hidden = true;
       phonebook.hidden = true;
       setESIMHealthPolling(false);
+      try {
+        const physicalStatus = await api("/api/status");
+        renderPhysicalSIMStatus(physicalStatus);
+        status.textContent = physicalStatus.sim_inserted
+          ? "实体 SIM 已就绪 · 身份与网络状态已更新"
+          : "已识别实体 SIM，但模块尚未报告就绪状态";
+      } catch (error) {
+        renderPhysicalSIMStatus({}, error.message);
+        status.textContent = "已识别实体 SIM，但当前状态读取不完整";
+      }
       return;
     }
     const notesResponse = await api("/api/esim/module-notes");

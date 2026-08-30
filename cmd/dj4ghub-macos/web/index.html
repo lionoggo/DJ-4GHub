@@ -62,7 +62,7 @@
         </button>
         <button class="tab" data-view="esim" type="button">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3h6.5L19 7.5V21H8a3 3 0 0 1-3-3V6a3 3 0 0 1 3-3Z"/><path d="M10 8.5v7M14 8.5v7M8.5 11h7M8.5 14h7"/></svg>
-          <span><strong>eSIM / 卡片</strong><small>Profile 管理</small></span>
+          <span><strong>eSIM / 卡片</strong><small>SIM 与 Profile 状态</small></span>
         </button>
         <button class="tab" data-view="network" type="button">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 18.5h15M6.5 15l3.2-3.2 2.6 2.2 5.2-6"/><path d="M14.5 8h3v3"/></svg>
@@ -289,12 +289,40 @@
 
       <section id="esim" class="view">
         <div class="view-intro">
-          <div><span class="section-kicker">EUICC</span><h2>eSIM / 卡片</h2><p>管理卡内 Profile，核对模块实际接管状态。</p></div>
+          <div><span id="card-view-kicker" class="section-kicker">EUICC</span><h2 id="card-view-title">eSIM / 卡片</h2><p id="card-view-description">管理卡内 Profile，核对模块实际接管状态。</p></div>
           <div class="view-intro-actions esim-intro-actions">
             <p id="esim-status" class="esim-status">等待读取卡片</p>
             <button id="refresh-esim" class="secondary" type="button">刷新卡片</button>
           </div>
         </div>
+        <section id="physical-sim-page" class="physical-sim-page" hidden aria-live="polite">
+          <div class="physical-sim-hero">
+            <div class="physical-sim-copy">
+              <span id="physical-sim-eyebrow" class="section-kicker">PHYSICAL SIM</span>
+              <h3 id="physical-sim-headline">正在读取实体 SIM</h3>
+              <p id="physical-sim-description">从模块读取卡片身份与蜂窝注册状态。</p>
+            </div>
+            <div class="physical-sim-activation">
+              <span class="physical-sim-orb" aria-hidden="true"><span>SIM</span></span>
+              <div>
+                <small>卡片状态</small>
+                <strong id="physical-sim-card-status">待读取</strong>
+                <p id="physical-sim-card-detail">正在检查 PIN 与网络注册</p>
+              </div>
+            </div>
+          </div>
+          <div class="physical-sim-grid">
+            <section class="physical-sim-panel">
+              <div class="physical-sim-panel-heading"><span class="section-kicker">CARD IDENTITY</span><strong>卡片身份</strong><small>敏感标识默认隐藏</small></div>
+              <div id="physical-sim-identity" class="physical-sim-facts"></div>
+            </section>
+            <section class="physical-sim-panel">
+              <div class="physical-sim-panel-heading"><span class="section-kicker">CELLULAR LINK</span><strong>网络接管</strong><small>来自当前模块状态</small></div>
+              <div id="physical-sim-network" class="physical-sim-facts"></div>
+            </section>
+          </div>
+          <div class="physical-sim-footnote"><span aria-hidden="true">↗</span><p>这是实体 SIM 的只读状态页。短信、通话和网络功能仍由各自工作台处理；卡内未写入本机号码时不影响模块使用。</p></div>
+        </section>
         <details id="esim-download-section" class="fold-panel esim-download">
           <summary><span><span class="panel-icon" aria-hidden="true">↓</span><strong>下载新 Profile</strong></span><small>SM-DP+ 激活信息</small></summary>
           <form id="esim-download-form" class="esim-download-grid">
