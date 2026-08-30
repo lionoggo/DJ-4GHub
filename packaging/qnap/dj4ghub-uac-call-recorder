@@ -1,0 +1,22 @@
+#!/bin/sh
+set -eu
+
+OUTPUT_PATH=${1:?usage: dj4ghub-uac-call-recorder OUTPUT.raw DURATION_SECONDS ALSA_CAPTURE_DEVICE}
+DURATION_SECONDS=${2:?usage: dj4ghub-uac-call-recorder OUTPUT.raw DURATION_SECONDS ALSA_CAPTURE_DEVICE}
+CAPTURE_DEVICE=${3:?Linux UAC recording requires an ALSA capture device}
+
+case "$DURATION_SECONDS" in
+  *[!0-9]*|'')
+    echo "recording duration must be a positive integer" >&2
+    exit 2
+    ;;
+esac
+
+exec arecord \
+  --device="$CAPTURE_DEVICE" \
+  --format=S16_LE \
+  --rate=8000 \
+  --channels=1 \
+  --file-type=raw \
+  --duration="$DURATION_SECONDS" \
+  "$OUTPUT_PATH"

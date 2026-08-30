@@ -1,0 +1,18 @@
+services:
+  dj4ghub:
+    build:
+      context: ../..
+      dockerfile: packaging/qnap/Dockerfile
+    image: dj4ghub:qnap-amd64
+    container_name: dj4ghub
+    restart: unless-stopped
+    privileged: true
+    ports:
+      - "127.0.0.1:7575:7575"
+    volumes:
+      - /share/Container/dj4ghub:/data
+
+# The private Baiwang 2ca3:4006 USB interface is not a ttyUSB device. The
+# privileged setting is intentional for this first-stage libusb transport; the
+# UI remains localhost-only on the NAS. Do not expose port 7575 to the public
+# internet. Linux UAC audio and recording are not enabled by this compose file.

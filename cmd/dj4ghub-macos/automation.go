@@ -69,6 +69,8 @@ type callAutomationConfig struct {
 	PromptText                  string   `json:"prompt_text"`
 	PromptFile                  string   `json:"prompt_file"`
 	PlaybackCommand             string   `json:"playback_command"`
+	USBAudioPlaybackDevice      string   `json:"usb_audio_playback_device"`
+	USBAudioCaptureDevice       string   `json:"usb_audio_capture_device"`
 	EnableUSBAudio              bool     `json:"enable_usb_audio"`
 	RecordCalls                 bool     `json:"record_calls"`
 	ForwardRecordingsToTelegram bool     `json:"forward_recordings_to_telegram"`
@@ -110,6 +112,8 @@ type callAutomationView struct {
 	PromptText                  string   `json:"prompt_text"`
 	PromptFile                  string   `json:"prompt_file"`
 	PlaybackCommand             string   `json:"playback_command"`
+	USBAudioPlaybackDevice      string   `json:"usb_audio_playback_device"`
+	USBAudioCaptureDevice       string   `json:"usb_audio_capture_device"`
 	EnableUSBAudio              bool     `json:"enable_usb_audio"`
 	RecordCalls                 bool     `json:"record_calls"`
 	ForwardRecordingsToTelegram bool     `json:"forward_recordings_to_telegram"`
@@ -268,6 +272,8 @@ func normalizeAutomationConfig(config *automationConfig) error {
 	config.Calls.PromptFile = strings.TrimSpace(config.Calls.PromptFile)
 	config.Calls.PromptText = strings.TrimSpace(config.Calls.PromptText)
 	config.Calls.PlaybackCommand = strings.TrimSpace(config.Calls.PlaybackCommand)
+	config.Calls.USBAudioPlaybackDevice = strings.TrimSpace(config.Calls.USBAudioPlaybackDevice)
+	config.Calls.USBAudioCaptureDevice = strings.TrimSpace(config.Calls.USBAudioCaptureDevice)
 	config.Calls.RecordingDirectory = strings.TrimSpace(config.Calls.RecordingDirectory)
 	if len(config.Calls.PromptFile) > 0 && !filepath.IsAbs(config.Calls.PromptFile) {
 		return errors.New("提示音文件必须使用绝对路径")
@@ -280,6 +286,9 @@ func normalizeAutomationConfig(config *automationConfig) error {
 	}
 	if config.Calls.PlaybackCommand != "" && !strings.Contains(config.Calls.PlaybackCommand, "{{file}}") {
 		return errors.New("提示音播放命令必须包含 {{file}} 占位符")
+	}
+	if len(config.Calls.USBAudioPlaybackDevice) > 180 || len(config.Calls.USBAudioCaptureDevice) > 180 {
+		return errors.New("USB Audio ALSA 设备名不能超过 180 个字符")
 	}
 	if config.Calls.RecordingDirectory != "" && !filepath.IsAbs(config.Calls.RecordingDirectory) {
 		return errors.New("录音保存目录必须使用绝对路径")
@@ -405,6 +414,8 @@ func automationConfigView(config automationConfig) automationView {
 			PromptText:                  config.Calls.PromptText,
 			PromptFile:                  config.Calls.PromptFile,
 			PlaybackCommand:             config.Calls.PlaybackCommand,
+			USBAudioPlaybackDevice:      config.Calls.USBAudioPlaybackDevice,
+			USBAudioCaptureDevice:       config.Calls.USBAudioCaptureDevice,
 			EnableUSBAudio:              config.Calls.EnableUSBAudio,
 			RecordCalls:                 config.Calls.RecordCalls,
 			ForwardRecordingsToTelegram: config.Calls.ForwardRecordingsToTelegram,
@@ -479,9 +490,6 @@ func (a *app) updateAutomation(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) generateTypedPrompt(text string) (string, error) {
-	if runtime.GOOS != "darwin" {
-		return "", errors.New("当前系统不能直接生成提示音，请改用提示音文件")
-	}
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return "", errors.New("提示语文本不能为空")
@@ -498,7 +506,14 @@ func (a *app) generateTypedPrompt(text string) (string, error) {
 	if err := os.MkdirAll(directory, 0o700); err != nil {
 		return "", fmt.Errorf("create prompt directory: %w", err)
 	}
-	temporary, err := os.CreateTemp(directory, "typed-prompt-*.aiff")
+	extension := ".aiff"
+	if runtime.GOOS == "linux" {
+		extension = ".wav"
+	}
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		return "", errors.New("当前系统不能直接生成提示音，请改用提示音文件")
+	}
+	temporary, err := os.CreateTemp(directory, "typed-prompt-*"+extension)
 	if err != nil {
 		return "", fmt.Errorf("create typed prompt: %w", err)
 	}
@@ -507,11 +522,16 @@ func (a *app) generateTypedPrompt(text string) (string, error) {
 		return "", err
 	}
 	defer os.Remove(temporaryPath)
-	output, err := exec.Command("say", "-v", "Tingting", "-o", temporaryPath, text).CombinedOutput()
+	var output []byte
+	if runtime.GOOS == "darwin" {
+		output, err = exec.Command("say", "-v", "Tingting", "-o", temporaryPath, text).CombinedOutput()
+	} else {
+		output, err = exec.Command("espeak-ng", "-v", "cmn", "-w", temporaryPath, text).CombinedOutput()
+	}
 	if err != nil {
 		return "", fmt.Errorf("generate prompt speech: %w (%s)", err, strings.TrimSpace(string(output)))
 	}
-	destination := filepath.Join(directory, "typed-prompt.aiff")
+	destination := filepath.Join(directory, "typed-prompt"+extension)
 	if err := os.Rename(temporaryPath, destination); err != nil {
 		return "", fmt.Errorf("save typed prompt: %w", err)
 	}
@@ -1337,7 +1357,18 @@ func (a *app) startHostCallRecording(id uint64, parent context.Context, config c
 		return fmt.Errorf("host recorder unavailable: %w", err)
 	}
 	recordContext, cancel := context.WithCancel(parent)
-	command := exec.CommandContext(recordContext, recorder, rawPath, "120")
+	recorderArgs := []string{rawPath, "120"}
+	if runtime.GOOS == "linux" {
+		captureDevice := config.USBAudioCaptureDevice
+		if captureDevice == "" {
+			captureDevice = config.USBAudioPlaybackDevice
+		}
+		if captureDevice == "" {
+			return errors.New("Linux 录音需要填写模块 USB Audio 采集设备")
+		}
+		recorderArgs = append(recorderArgs, captureDevice)
+	}
+	command := exec.CommandContext(recordContext, recorder, recorderArgs...)
 	if err := command.Start(); err != nil {
 		cancel()
 		return fmt.Errorf("start host recorder: %w", err)
@@ -1541,6 +1572,9 @@ func playPrompt(ctx context.Context, config callAutomationConfig, number string)
 	}
 	if runtime.GOOS == "darwin" {
 		return exec.CommandContext(ctx, "afplay", config.PromptFile).Run()
+	}
+	if runtime.GOOS == "linux" && config.USBAudioPlaybackDevice != "" {
+		return exec.CommandContext(ctx, "aplay", "-D", config.USBAudioPlaybackDevice, config.PromptFile).Run()
 	}
 	return exec.CommandContext(ctx, "aplay", config.PromptFile).Run()
 }

@@ -1310,6 +1310,8 @@ async function loadAutomation() {
     $("#automation-hangup-delay").value = String(calls.hangup_after_seconds ?? 12);
     $("#automation-prompt-text").value = calls.prompt_text || "";
     $("#automation-prompt-file").value = calls.prompt_file || "";
+    $("#automation-usb-audio-playback-device").value = calls.usb_audio_playback_device || "";
+    $("#automation-usb-audio-capture-device").value = calls.usb_audio_capture_device || "";
     $("#automation-playback-command").value = calls.playback_command || "";
     $("#automation-enable-uac").checked = Boolean(calls.enable_usb_audio);
     $("#automation-record-calls").checked = Boolean(calls.record_calls);
@@ -1498,6 +1500,8 @@ function automationPayload() {
       hangup_after_seconds: Number($("#automation-hangup-delay").value || 0),
       prompt_text: $("#automation-prompt-text").value.trim(),
       prompt_file: $("#automation-prompt-file").value.trim(),
+      usb_audio_playback_device: $("#automation-usb-audio-playback-device").value.trim(),
+      usb_audio_capture_device: $("#automation-usb-audio-capture-device").value.trim(),
       playback_command: $("#automation-playback-command").value.trim(),
       enable_usb_audio: $("#automation-enable-uac").checked,
       record_calls: $("#automation-record-calls").checked,

@@ -272,8 +272,10 @@
               <label class="automation-field wide"><span>来电白名单</span><textarea id="automation-call-allowlist" rows="2" placeholder="留空表示接听所有来电；每行一个手机号"></textarea></label>
               <label class="automation-field"><span>接听延迟（秒）</span><input id="automation-answer-delay" type="number" min="0" max="120" inputmode="numeric"></label>
               <label class="automation-field"><span>自动挂断（秒）</span><input id="automation-hangup-delay" type="number" min="0" max="120" inputmode="numeric"><small>填 0 表示不自动挂断。</small></label>
-              <label class="automation-field wide"><span>提示语文本</span><textarea id="automation-prompt-text" rows="2" placeholder="输入后由 Mac 自动生成提示音；文本优先于提示音文件"></textarea></label>
+              <label class="automation-field wide"><span>提示语文本</span><textarea id="automation-prompt-text" rows="2" placeholder="输入后自动生成提示音；文本优先于提示音文件"></textarea><small>macOS 使用系统语音；NAS 容器使用中文 eSpeak NG。</small></label>
               <label class="automation-field wide"><span>提示音文件</span><input id="automation-prompt-file" type="text" autocomplete="off" placeholder="绝对路径，例如 /share/Media/answer.wav"></label>
+              <label class="automation-field"><span>USB Audio 播放设备</span><input id="automation-usb-audio-playback-device" type="text" autocomplete="off" placeholder="NAS 示例：plughw:1,0"><small>仅 Linux/NAS；用于将提示音送往来电方。</small></label>
+              <label class="automation-field"><span>USB Audio 采集设备</span><input id="automation-usb-audio-capture-device" type="text" autocomplete="off" placeholder="留空则使用播放设备"><small>仅 Linux/NAS；用于采集来电方录音。</small></label>
               <label class="automation-field wide"><span>高级播放命令</span><input id="automation-playback-command" type="text" autocomplete="off" placeholder="留空使用系统播放器；命令需包含 {{file}}"><small>用于将声音定向到模块的 USB Audio/UAC 设备；{{number}} 可代入来电号码。</small></label>
               <label class="automation-field wide"><span>录音保存目录</span><input id="automation-recording-directory" type="text" autocomplete="off" placeholder="留空保存到 DJ 4G Hub 配置目录下的 recordings"></label>
             </div>

@@ -1,4 +1,4 @@
-//go:build darwin && cgo
+//go:build cgo && (darwin || linux)
 
 package main
 
@@ -55,6 +55,11 @@ func openDJIUSBAT() (*usbAT, error) {
 		C.libusb_exit(ctx)
 		return nil, err
 	}
+	// The Baiwang private bulk interface is normally driverless. On Linux,
+	// however, a generic USB driver can claim it first. Ask libusb to detach
+	// such a kernel driver for the lifetime of this handle; unsupported hosts
+	// (including macOS) simply ignore this request.
+	_ = C.libusb_set_auto_detach_kernel_driver(handle, 1)
 	var lastErr error
 	for _, candidate := range candidates {
 		if rc := C.libusb_claim_interface(handle, C.int(candidate.iface)); rc != 0 {
