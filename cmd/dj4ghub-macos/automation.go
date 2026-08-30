@@ -6,6 +6,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1413,24 +1414,13 @@ func (a *app) finishHostCallRecording(recording callRecording, number string) {
 		log.Printf("host recording contained no downlink audio")
 		return
 	}
-	ffmpegPath, err := exec.LookPath("ffmpeg")
-	if err != nil && runtime.GOOS == "darwin" {
-		if _, statErr := os.Stat("/opt/homebrew/bin/ffmpeg"); statErr == nil {
-			ffmpegPath = "/opt/homebrew/bin/ffmpeg"
-			err = nil
-		}
-	}
+	raw, err := os.ReadFile(recording.rawPath)
 	if err != nil {
-		log.Printf("host recording cannot be finalized without ffmpeg: %v", err)
+		log.Printf("host recording raw read failed: %v", err)
 		return
 	}
-	command := exec.Command(
-		ffmpegPath, "-nostdin", "-v", "error", "-y",
-		"-f", "s16le", "-ar", "8000", "-ac", "1", "-i", recording.rawPath,
-		"-c:a", "pcm_s16le", recording.outputPath,
-	)
-	if output, err := command.CombinedOutput(); err != nil {
-		log.Printf("host recording WAV conversion failed: %v (%s)", err, strings.TrimSpace(string(output)))
+	if err := writePCM16MonoWAV(recording.outputPath, raw, 8000); err != nil {
+		log.Printf("host recording WAV finalization failed: %v", err)
 		return
 	}
 	if err := os.Chmod(recording.outputPath, 0o600); err != nil {
@@ -1442,6 +1432,33 @@ func (a *app) finishHostCallRecording(recording callRecording, number string) {
 	log.Printf("caller-side recording saved to %s (%d raw bytes; caller %s)", recording.outputPath, stat.Size(), displayCallNumber(number))
 	a.markCallRecording(recording.callID, filepath.Base(recording.outputPath))
 	go a.forwardCallRecording(recording.outputPath, number, recording.startedAt, recording.callID)
+}
+
+// writePCM16MonoWAV wraps the known UAC stream format (16-bit little-endian,
+// mono) without ffmpeg. The Baiwang module exposes this exact 8 kHz format,
+// so this keeps the NAS runtime small and avoids a lossy conversion.
+func writePCM16MonoWAV(path string, raw []byte, sampleRate uint32) error {
+	if sampleRate == 0 {
+		return errors.New("WAV sample rate is required")
+	}
+	if len(raw) > int(^uint32(0))-36 {
+		return errors.New("WAV payload is too large")
+	}
+	const headerSize = 44
+	header := make([]byte, headerSize)
+	copy(header[0:4], "RIFF")
+	binary.LittleEndian.PutUint32(header[4:8], uint32(36+len(raw)))
+	copy(header[8:16], "WAVEfmt ")
+	binary.LittleEndian.PutUint32(header[16:20], 16)
+	binary.LittleEndian.PutUint16(header[20:22], 1)
+	binary.LittleEndian.PutUint16(header[22:24], 1)
+	binary.LittleEndian.PutUint32(header[24:28], sampleRate)
+	binary.LittleEndian.PutUint32(header[28:32], sampleRate*2)
+	binary.LittleEndian.PutUint16(header[32:34], 2)
+	binary.LittleEndian.PutUint16(header[34:36], 16)
+	copy(header[36:40], "data")
+	binary.LittleEndian.PutUint32(header[40:44], uint32(len(raw)))
+	return os.WriteFile(path, append(header, raw...), 0o600)
 }
 
 func (a *app) forwardCallRecording(path, number string, recordedAt time.Time, callID uint64) {

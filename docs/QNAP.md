@@ -48,7 +48,7 @@ VPN、SSH 隧道，或由 NAS 的已认证反向代理提供保护。
 对于 DJI/Baiwang 私有接口，模块的 `/dev/bus/usb/...` 节点通常仅允许 QTS
 管理员访问。免容器方式可先验证私有 AT、实体 SIM、短信与自动接听控制；来电
 提示音、录音和中文语音合成仍推荐下文的 Container Station 运行时，因为它提供
-ALSA、eSpeak NG 和 ffmpeg。
+ALSA 与中文 eSpeak NG。
 
 ## Container Station
 
@@ -79,7 +79,7 @@ DOCKER_REGISTRY=docker.m.daocloud.io \
 
 ## 来电提示音与录音（Linux ALSA 预览）
 
-容器镜像带有 `aplay`、`arecord`、`ffmpeg` 与中文 eSpeak NG。模块在通话中必须
+容器镜像带有 `aplay`、`arecord` 与中文 eSpeak NG。模块在通话中必须
 枚举出对应的 UAC 音频设备；在容器内先运行 `aplay -l` 与 `arecord -l`，确认模块
 播放与采集设备后，再在“自动化”页面填写 ALSA 名称，例如 `plughw:1,0`。
 

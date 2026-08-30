@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -23,6 +24,27 @@ func TestParseCLCCCalls(t *testing.T) {
 	}
 	if calls[0].Number != "+8613812345678" {
 		t.Fatalf("parseCLCCCalls() number = %q", calls[0].Number)
+	}
+}
+
+func TestWritePCM16MonoWAV(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "call.wav")
+	raw := []byte{0x00, 0x80, 0xff, 0x7f}
+	if err := writePCM16MonoWAV(path, raw, 8000); err != nil {
+		t.Fatalf("writePCM16MonoWAV() error = %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data) != 44+len(raw) || string(data[0:4]) != "RIFF" || string(data[8:12]) != "WAVE" || string(data[36:40]) != "data" {
+		t.Fatalf("unexpected WAV header: %x", data[:44])
+	}
+	if got := binary.LittleEndian.Uint32(data[24:28]); got != 8000 {
+		t.Fatalf("sample rate = %d, want 8000", got)
+	}
+	if got := binary.LittleEndian.Uint32(data[40:44]); got != uint32(len(raw)) {
+		t.Fatalf("data size = %d, want %d", got, len(raw))
 	}
 }
 
