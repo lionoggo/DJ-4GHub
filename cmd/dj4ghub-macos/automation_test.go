@@ -191,6 +191,18 @@ func TestNormalizeAutomationConfigAcceptsTypedPrompt(t *testing.T) {
 	}
 }
 
+func TestNormalizeAutomationConfigRequiresFileForFilePromptSource(t *testing.T) {
+	config := defaultAutomationConfig()
+	config.Calls.PromptSource = promptSourceFile
+	if err := normalizeAutomationConfig(&config); err == nil {
+		t.Fatal("normalizeAutomationConfig() allowed a file prompt source without a file")
+	}
+	config.Calls.PromptFile = "/tmp/answer.wav"
+	if err := normalizeAutomationConfig(&config); err != nil {
+		t.Fatalf("normalizeAutomationConfig() rejected a file prompt source: %v", err)
+	}
+}
+
 func TestParseModuleFileSize(t *testing.T) {
 	size, err := parseModuleFileSize("+QFLST: \"dj4ghub_call.wav\",32768\r\nOK")
 	if err != nil || size != 32768 {

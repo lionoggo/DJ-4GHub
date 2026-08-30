@@ -550,9 +550,11 @@ input:focus { border-color: color-mix(in srgb, var(--accent) 50%, var(--line)); 
 .automation-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 13px 14px; padding: 18px 20px; }
 .automation-field { display: grid; min-width: 0; gap: 6px; color: var(--text-default); font-size: 10px; font-weight: 600; }
 .automation-field.wide { grid-column: span 2; }
-.automation-field input, .automation-field textarea { width: 100%; border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 9px 10px; outline: 0; background: var(--field); color: var(--text); font-size: 12px; font-weight: 450; line-height: 1.42; transition: border-color .16s ease, box-shadow .16s ease; }
+.automation-field input, .automation-field textarea, .automation-field select { width: 100%; border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 9px 10px; outline: 0; background: var(--field); color: var(--text); font-size: 12px; font-weight: 450; line-height: 1.42; transition: border-color .16s ease, box-shadow .16s ease; }
 .automation-field textarea { min-height: 50px; resize: vertical; }
-.automation-field input:focus, .automation-field textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 15%, transparent); }
+.automation-field select { cursor: pointer; }
+.automation-field input:focus, .automation-field textarea:focus, .automation-field select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 15%, transparent); }
+.automation-field input:disabled, .automation-field textarea:disabled { cursor: not-allowed; color: var(--dim); background: color-mix(in srgb, var(--field) 66%, var(--surface-soft)); }
 .automation-field small { color: var(--dim); font-size: 9px; font-weight: 450; line-height: 1.45; }
 .automation-channel-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border-top: 1px solid var(--hairline); }
 .automation-channel { min-width: 0; }

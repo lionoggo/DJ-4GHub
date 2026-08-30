@@ -32,6 +32,8 @@ const (
 	maxCallHistoryItems       = 40
 	maxCallRecordingItems     = 60
 	modulePromptFilename      = "dj4ghub_prompt.wav"
+	promptSourceText          = "text"
+	promptSourceFile          = "file"
 )
 
 type automationConfig struct {
@@ -67,6 +69,7 @@ type callAutomationConfig struct {
 	AllowedNumbers              []string `json:"allowed_numbers"`
 	AnswerAfterSeconds          int      `json:"answer_after_seconds"`
 	HangupAfterSeconds          int      `json:"hangup_after_seconds"`
+	PromptSource                string   `json:"prompt_source"`
 	PromptText                  string   `json:"prompt_text"`
 	PromptFile                  string   `json:"prompt_file"`
 	PlaybackCommand             string   `json:"playback_command"`
@@ -110,6 +113,7 @@ type callAutomationView struct {
 	AllowedNumbers              []string `json:"allowed_numbers"`
 	AnswerAfterSeconds          int      `json:"answer_after_seconds"`
 	HangupAfterSeconds          int      `json:"hangup_after_seconds"`
+	PromptSource                string   `json:"prompt_source"`
 	PromptText                  string   `json:"prompt_text"`
 	PromptFile                  string   `json:"prompt_file"`
 	PlaybackCommand             string   `json:"playback_command"`
@@ -184,6 +188,7 @@ func defaultAutomationConfig() automationConfig {
 		Calls: callAutomationConfig{
 			AnswerAfterSeconds: 2,
 			HangupAfterSeconds: 12,
+			PromptSource:       promptSourceText,
 		},
 	}
 }
@@ -270,12 +275,25 @@ func normalizeAutomationConfig(config *automationConfig) error {
 	if config.Calls.HangupAfterSeconds < 0 || config.Calls.HangupAfterSeconds > maxAutomationDelay {
 		return fmt.Errorf("自动挂断时间必须在 0 到 %d 秒之间", maxAutomationDelay)
 	}
+	config.Calls.PromptSource = strings.ToLower(strings.TrimSpace(config.Calls.PromptSource))
 	config.Calls.PromptFile = strings.TrimSpace(config.Calls.PromptFile)
 	config.Calls.PromptText = strings.TrimSpace(config.Calls.PromptText)
 	config.Calls.PlaybackCommand = strings.TrimSpace(config.Calls.PlaybackCommand)
 	config.Calls.USBAudioPlaybackDevice = strings.TrimSpace(config.Calls.USBAudioPlaybackDevice)
 	config.Calls.USBAudioCaptureDevice = strings.TrimSpace(config.Calls.USBAudioCaptureDevice)
 	config.Calls.RecordingDirectory = strings.TrimSpace(config.Calls.RecordingDirectory)
+	if config.Calls.PromptSource == "" {
+		config.Calls.PromptSource = promptSourceText
+	}
+	switch config.Calls.PromptSource {
+	case promptSourceText:
+	case promptSourceFile:
+		if config.Calls.PromptFile == "" {
+			return errors.New("使用提示音文件时必须填写文件路径")
+		}
+	default:
+		return errors.New("提示音来源只能是文本合成或提示音文件")
+	}
 	if len(config.Calls.PromptFile) > 0 && !filepath.IsAbs(config.Calls.PromptFile) {
 		return errors.New("提示音文件必须使用绝对路径")
 	}
@@ -412,6 +430,7 @@ func automationConfigView(config automationConfig) automationView {
 			AllowedNumbers:              append([]string(nil), config.Calls.AllowedNumbers...),
 			AnswerAfterSeconds:          config.Calls.AnswerAfterSeconds,
 			HangupAfterSeconds:          config.Calls.HangupAfterSeconds,
+			PromptSource:                config.Calls.PromptSource,
 			PromptText:                  config.Calls.PromptText,
 			PromptFile:                  config.Calls.PromptFile,
 			PlaybackCommand:             config.Calls.PlaybackCommand,
@@ -459,7 +478,11 @@ func (a *app) updateAutomation(w http.ResponseWriter, r *http.Request) {
 	if incoming.SMS.Feishu.ClearSecret {
 		incoming.SMS.Feishu.SigningSecret = ""
 	}
-	if incoming.Calls.PromptText != "" {
+	incoming.Calls.PromptSource = strings.ToLower(strings.TrimSpace(incoming.Calls.PromptSource))
+	if incoming.Calls.PromptSource == "" {
+		incoming.Calls.PromptSource = promptSourceText
+	}
+	if incoming.Calls.PromptSource == promptSourceText && incoming.Calls.PromptText != "" {
 		promptFile, err := a.generateTypedPrompt(incoming.Calls.PromptText)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())

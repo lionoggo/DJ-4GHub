@@ -272,8 +272,9 @@
               <label class="automation-field wide"><span>来电白名单</span><textarea id="automation-call-allowlist" rows="2" placeholder="留空表示接听所有来电；每行一个手机号"></textarea></label>
               <label class="automation-field"><span>接听延迟（秒）</span><input id="automation-answer-delay" type="number" min="0" max="120" inputmode="numeric"></label>
               <label class="automation-field"><span>自动挂断（秒）</span><input id="automation-hangup-delay" type="number" min="0" max="120" inputmode="numeric"><small>填 0 表示不自动挂断。</small></label>
-              <label class="automation-field wide"><span>提示语文本</span><textarea id="automation-prompt-text" rows="2" placeholder="输入后自动生成提示音；文本优先于提示音文件"></textarea><small>macOS 使用系统语音；NAS 容器使用中文 eSpeak NG。</small></label>
-              <label class="automation-field wide"><span>提示音文件</span><input id="automation-prompt-file" type="text" autocomplete="off" placeholder="绝对路径，例如 /share/Media/answer.wav"></label>
+              <label class="automation-field"><span>提示音来源</span><select id="automation-prompt-source"><option value="text">文本合成</option><option value="file">提示音文件</option></select><small id="automation-prompt-source-note"></small></label>
+              <label class="automation-field"><span>提示音文件</span><input id="automation-prompt-file" type="text" autocomplete="off" placeholder="绝对路径，例如 /data/prompts/answer.wav"><small>选择“提示音文件”后使用；建议 WAV、单声道、8 kHz。</small></label>
+              <label class="automation-field wide"><span>提示语文本</span><textarea id="automation-prompt-text" rows="2" placeholder="选择“文本合成”后输入；保存时会生成新的提示音"></textarea><small>macOS 使用系统普通话语音；NAS 的内置合成仅适合作为基础方案。</small></label>
               <label class="automation-field"><span>USB Audio 播放设备</span><input id="automation-usb-audio-playback-device" type="text" autocomplete="off" placeholder="NAS 示例：plughw:1,0"><small>仅 Linux/NAS；用于将提示音送往来电方。</small></label>
               <label class="automation-field"><span>USB Audio 采集设备</span><input id="automation-usb-audio-capture-device" type="text" autocomplete="off" placeholder="留空则使用播放设备"><small>仅 Linux/NAS；用于采集来电方录音。</small></label>
               <label class="automation-field wide"><span>高级播放命令</span><input id="automation-playback-command" type="text" autocomplete="off" placeholder="留空使用系统播放器；命令需包含 {{file}}"><small>用于将声音定向到模块的 USB Audio/UAC 设备；{{number}} 可代入来电号码。</small></label>

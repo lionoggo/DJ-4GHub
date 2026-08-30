@@ -1281,6 +1281,20 @@ function textToList(value) {
   return String(value || "").split(/[\n,;]/).map((item) => item.trim()).filter(Boolean);
 }
 
+function syncPromptSourceUI() {
+  const source = $("#automation-prompt-source");
+  const text = $("#automation-prompt-text");
+  const file = $("#automation-prompt-file");
+  const note = $("#automation-prompt-source-note");
+  if (!source || !text || !file || !note) return;
+  const isFile = source.value === "file";
+  text.disabled = isFile;
+  file.disabled = !isFile;
+  note.textContent = isFile
+    ? "当前将直接播放已验证的音频文件；保存其他设置不会重新合成提示音。"
+    : "根据文本生成提示音；NAS 使用基础中文合成，建议重要提示使用准备好的 WAV 文件。";
+}
+
 async function loadAutomation() {
   try {
     const settings = await api("/api/automation");
@@ -1308,8 +1322,10 @@ async function loadAutomation() {
     $("#automation-call-allowlist").value = listToText(calls.allowed_numbers);
     $("#automation-answer-delay").value = String(calls.answer_after_seconds ?? 2);
     $("#automation-hangup-delay").value = String(calls.hangup_after_seconds ?? 12);
+    $("#automation-prompt-source").value = calls.prompt_source || "text";
     $("#automation-prompt-text").value = calls.prompt_text || "";
     $("#automation-prompt-file").value = calls.prompt_file || "";
+    syncPromptSourceUI();
     $("#automation-usb-audio-playback-device").value = calls.usb_audio_playback_device || "";
     $("#automation-usb-audio-capture-device").value = calls.usb_audio_capture_device || "";
     $("#automation-playback-command").value = calls.playback_command || "";
@@ -1498,6 +1514,7 @@ function automationPayload() {
       allowed_numbers: textToList($("#automation-call-allowlist").value),
       answer_after_seconds: Number($("#automation-answer-delay").value || 0),
       hangup_after_seconds: Number($("#automation-hangup-delay").value || 0),
+      prompt_source: $("#automation-prompt-source").value,
       prompt_text: $("#automation-prompt-text").value.trim(),
       prompt_file: $("#automation-prompt-file").value.trim(),
       usb_audio_playback_device: $("#automation-usb-audio-playback-device").value.trim(),
@@ -1511,6 +1528,8 @@ function automationPayload() {
     },
   };
 }
+
+$("#automation-prompt-source")?.addEventListener("change", syncPromptSourceUI);
 
 document.querySelectorAll(".tab").forEach((tab) => {
   tab.addEventListener("click", () => {
