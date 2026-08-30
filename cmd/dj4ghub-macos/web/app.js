@@ -1320,8 +1320,8 @@ async function loadAutomation() {
       : "签名可选；启用后会自动附加签名。";
     $("#automation-call-enabled").checked = Boolean(calls.enabled);
     $("#automation-call-allowlist").value = listToText(calls.allowed_numbers);
-    $("#automation-answer-delay").value = String(calls.answer_after_seconds ?? 2);
-    $("#automation-hangup-delay").value = String(calls.hangup_after_seconds ?? 12);
+    $("#automation-answer-delay").value = String(calls.answer_after_seconds ?? 10);
+    $("#automation-hangup-delay").value = String(calls.hangup_after_seconds ?? 0);
     $("#automation-prompt-source").value = calls.prompt_source || "text";
     $("#automation-prompt-text").value = calls.prompt_text || "";
     $("#automation-prompt-file").value = calls.prompt_file || "";

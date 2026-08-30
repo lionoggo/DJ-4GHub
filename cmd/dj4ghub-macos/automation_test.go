@@ -203,6 +203,16 @@ func TestNormalizeAutomationConfigRequiresFileForFilePromptSource(t *testing.T) 
 	}
 }
 
+func TestCallPromptWarmDelay(t *testing.T) {
+	warmDelay, ok := callPromptWarmDelay(10 * time.Second)
+	if !ok || warmDelay != 8*time.Second {
+		t.Fatalf("callPromptWarmDelay(10s) = %v, %v; want 8s, true", warmDelay, ok)
+	}
+	if warmDelay, ok := callPromptWarmDelay(2 * time.Second); ok || warmDelay != 0 {
+		t.Fatalf("callPromptWarmDelay(2s) = %v, %v; want 0, false", warmDelay, ok)
+	}
+}
+
 func TestAutomationAPIFilePromptSourcePreservesPreparedAudio(t *testing.T) {
 	instance := &app{automationPath: filepath.Join(t.TempDir(), "automation.json")}
 	incoming := automationConfig{

@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"mime/multipart"
 	"net/http"
@@ -34,7 +35,11 @@ const (
 	modulePromptFilename      = "dj4ghub_prompt.wav"
 	promptSourceText          = "text"
 	promptSourceFile          = "file"
+	defaultCallAnswerDelay    = 10
+	defaultCallHangupDelay    = 0
 )
+
+const callPromptWarmLead = 2 * time.Second
 
 type automationConfig struct {
 	SMS   smsForwardConfig     `json:"sms"`
@@ -186,8 +191,8 @@ func defaultAutomationConfig() automationConfig {
 	return automationConfig{
 		SMS: smsForwardConfig{TextTemplate: defaultSMSForwardTemplate},
 		Calls: callAutomationConfig{
-			AnswerAfterSeconds: 2,
-			HangupAfterSeconds: 12,
+			AnswerAfterSeconds: defaultCallAnswerDelay,
+			HangupAfterSeconds: defaultCallHangupDelay,
 			PromptSource:       promptSourceText,
 		},
 	}
@@ -953,7 +958,23 @@ func (a *app) processIncomingCall(id uint64, ctx context.Context) {
 		a.setCallStatus(id, "配置读取失败", "", false)
 		return
 	}
-	if !waitForCall(ctx, time.Duration(config.Calls.AnswerAfterSeconds)*time.Second) {
+	answerDelay := time.Duration(config.Calls.AnswerAfterSeconds) * time.Second
+	modulePromptPrepared := false
+	modulePromptReady := false
+	if warmDelay, shouldWarm := callPromptWarmDelay(answerDelay); shouldWarm {
+		if !waitForCall(ctx, warmDelay) {
+			return
+		}
+		// Warming only reads/prepares the prompt asset. The VoLTE/UAC bridge is
+		// deliberately not started until after ATA confirms the call is active.
+		a.prewarmCallPrompt(config.Calls)
+		modulePromptPrepared = true
+		modulePromptReady = a.prepareModulePrompt(config.Calls)
+		a.setCallStatus(id, "检测到来电", "提示音已预热，即将自动接听", false)
+		if !waitForCall(ctx, callPromptWarmLead) {
+			return
+		}
+	} else if !waitForCall(ctx, answerDelay) {
 		return
 	}
 	number := a.currentCallNumber(id)
@@ -961,7 +982,9 @@ func (a *app) processIncomingCall(id uint64, ctx context.Context) {
 		a.setCallStatus(id, "来电未接听", "号码不在白名单中", false)
 		return
 	}
-	modulePromptReady := a.prepareModulePrompt(config.Calls)
+	if !modulePromptPrepared {
+		modulePromptReady = a.prepareModulePrompt(config.Calls)
+	}
 	if !a.claimCallWorkflow(id) {
 		return
 	}
@@ -1017,14 +1040,24 @@ func (a *app) runAnsweredCallWorkflow(id uint64, ctx context.Context, config aut
 			}
 		}()
 	}
-	a.setCallStatus(id, "已接听", "正在播放提示音", true)
+	recordingStarted := false
 	if config.Calls.RecordCalls {
-		// QDC507's QAUDRD command is rejected while its VoLTE bridge is active.
-		// Begin recording from the verified UAC downlink after the prompt has
-		// finished, so it cannot contend with the caller-facing prompt stream.
-		go a.scheduleHostCallRecording(id, ctx, config.Calls)
+		// UAC capture is the caller-to-module direction while the prompt is
+		// played in the module-to-caller direction. Arm it before playback so a
+		// caller who speaks immediately after the prompt is never missed.
+		if err := a.startHostCallRecording(id, ctx, config.Calls); err != nil {
+			log.Printf("host call recording did not start: %v", err)
+			a.setCallStatus(id, "已接听", "录音未启动："+err.Error(), true)
+		} else {
+			recordingStarted = true
+		}
 	}
 	if config.Calls.PromptFile != "" {
+		detail := "正在播放提示音"
+		if recordingStarted {
+			detail = "正在播放提示音并录制来电方语音"
+		}
+		a.setCallStatus(id, "已接听", detail, true)
 		if !waitForCall(ctx, 500*time.Millisecond) {
 			return
 		}
@@ -1047,8 +1080,14 @@ func (a *app) runAnsweredCallWorkflow(id uint64, ctx context.Context, config aut
 				log.Printf("host call prompt playback completed")
 			}
 		}
+	} else if recordingStarted {
+		a.setCallStatus(id, "已接听", "正在录制来电方语音", true)
 	}
 	if config.Calls.HangupAfterSeconds <= 0 {
+		// Keep the module UAC/VoLTE bridge alive for caller-controlled calls.
+		// Returning here would run the route cleanup immediately after the
+		// prompt, leaving the recorder with a valid WAV file but no audio input.
+		<-ctx.Done()
 		return
 	}
 	if !waitForCall(ctx, time.Duration(config.Calls.HangupAfterSeconds)*time.Second) {
@@ -1061,6 +1100,31 @@ func (a *app) runAnsweredCallWorkflow(id uint64, ctx context.Context, config aut
 	}
 	log.Printf("incoming call hung up automatically")
 	a.clearActiveCall("已自动挂断")
+}
+
+func callPromptWarmDelay(answerDelay time.Duration) (time.Duration, bool) {
+	if answerDelay <= callPromptWarmLead {
+		return 0, false
+	}
+	return answerDelay - callPromptWarmLead, true
+}
+
+func (a *app) prewarmCallPrompt(config callAutomationConfig) {
+	if config.PromptFile == "" {
+		return
+	}
+	file, err := os.Open(config.PromptFile)
+	if err != nil {
+		log.Printf("call prompt prewarm skipped: %v", err)
+		return
+	}
+	defer file.Close()
+	buffer := make([]byte, 4096)
+	if _, err := file.Read(buffer); err != nil && !errors.Is(err, io.EOF) {
+		log.Printf("call prompt prewarm read failed: %v", err)
+		return
+	}
+	log.Printf("call prompt prewarmed")
 }
 
 func (a *app) prepareModulePrompt(config callAutomationConfig) bool {
@@ -1383,19 +1447,6 @@ func (a *app) finishCallRecording(recording callRecording, number string) {
 	log.Printf("caller-side recording saved to %s (%d bytes; caller %s)", path, len(data), displayCallNumber(number))
 	a.markCallRecording(recording.callID, filepath.Base(path))
 	go a.forwardCallRecording(path, number, recording.startedAt, recording.callID)
-}
-
-func (a *app) scheduleHostCallRecording(id uint64, ctx context.Context, config callAutomationConfig) {
-	// Rebuilding the module UAC route plus the generated prompt takes about
-	// twelve seconds. Start after that so recording does not contend with the
-	// caller-facing prompt stream on the same device.
-	if !waitForCall(ctx, 13*time.Second) {
-		return
-	}
-	if err := a.startHostCallRecording(id, ctx, config); err != nil {
-		log.Printf("host call recording did not start: %v", err)
-		a.setCallStatus(id, "已接听", "录音未启动："+err.Error(), true)
-	}
 }
 
 func (a *app) startHostCallRecording(id uint64, parent context.Context, config callAutomationConfig) error {
