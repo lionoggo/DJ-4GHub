@@ -1,4 +1,6 @@
-FROM golang:1.26-bookworm AS build
+ARG DOCKER_REGISTRY=docker.io
+
+FROM ${DOCKER_REGISTRY}/library/golang:1.26-bookworm AS build
 
 WORKDIR /src
 COPY . .
@@ -6,7 +8,7 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
     -trimpath -buildvcs=false -ldflags='-s -w' \
     -o /out/dj4ghub ./cmd/dj4ghub-macos
 
-FROM debian:bookworm-slim
+FROM ${DOCKER_REGISTRY}/library/debian:bookworm-slim
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates espeak-ng ffmpeg libasound2 alsa-utils \

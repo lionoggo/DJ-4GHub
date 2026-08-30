@@ -62,6 +62,14 @@ mkdir -p /share/Container/dj4ghub
 docker compose -f packaging/qnap/docker-compose.yml up -d --build
 ```
 
+若 NAS 的默认 Docker Hub 连接不可用，可只为这一次构建选择镜像源，无需重启
+Container Station 或改变全局 DNS：
+
+```sh
+DOCKER_REGISTRY=docker.m.daocloud.io \
+  docker compose -f packaging/qnap/docker-compose.yml up -d --build
+```
+
 容器启动后，先检查日志中是否出现 `USB AT · 2ca3:4006`，再配置短信与自动
 接听规则。若没有出现，请停止容器，不要反复切换模块的 USB 模式。
 

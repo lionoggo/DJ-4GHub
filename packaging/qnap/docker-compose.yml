@@ -3,6 +3,8 @@ services:
     build:
       context: ../..
       dockerfile: packaging/qnap/Dockerfile
+      args:
+        DOCKER_REGISTRY: ${DOCKER_REGISTRY:-docker.io}
     image: dj4ghub:qnap-amd64
     container_name: dj4ghub
     restart: unless-stopped
@@ -13,6 +15,6 @@ services:
       - /share/Container/dj4ghub:/data
 
 # The private Baiwang 2ca3:4006 USB interface is not a ttyUSB device. The
-# privileged setting is intentional for this first-stage libusb transport; the
-# UI remains localhost-only on the NAS. Do not expose port 7575 to the public
-# internet. Linux UAC audio and recording are not enabled by this compose file.
+# privileged setting is intentional for the native private USB transport and
+# USB Audio device access. The UI remains localhost-only on the NAS. Do not
+# expose port 7575 to the public internet.
