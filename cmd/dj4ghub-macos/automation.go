@@ -176,6 +176,11 @@ type activeCall struct {
 	recording       *callRecording
 }
 
+type moduleVoiceRouteWarmup struct {
+	started bool
+	err     error
+}
+
 type callRecording struct {
 	callID         uint64
 	moduleFilename string
@@ -630,7 +635,7 @@ func (a *app) answerActiveCall(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 	log.Printf("incoming call manually answered from %s", displayCallNumber(number))
-	go a.runAnsweredCallWorkflow(id, ctx, config, modulePromptReady)
+	go a.runAnsweredCallWorkflow(id, ctx, config, modulePromptReady, nil)
 	writeJSON(w, http.StatusOK, map[string]string{"message": "已接听，正在执行提示音与录音流程"})
 }
 
@@ -961,6 +966,7 @@ func (a *app) processIncomingCall(id uint64, ctx context.Context) {
 	answerDelay := time.Duration(config.Calls.AnswerAfterSeconds) * time.Second
 	modulePromptPrepared := false
 	modulePromptReady := false
+	var voiceRouteWarmup <-chan moduleVoiceRouteWarmup
 	if warmDelay, shouldWarm := callPromptWarmDelay(answerDelay); shouldWarm {
 		if !waitForCall(ctx, warmDelay) {
 			return
@@ -970,6 +976,9 @@ func (a *app) processIncomingCall(id uint64, ctx context.Context) {
 		a.prewarmCallPrompt(config.Calls)
 		modulePromptPrepared = true
 		modulePromptReady = a.prepareModulePrompt(config.Calls)
+		if runtime.GOOS == "linux" && config.Calls.EnableUSBAudio && numberAllowed(a.currentCallNumber(id), config.Calls.AllowedNumbers) {
+			voiceRouteWarmup = a.prewarmModuleVoiceRoute(ctx)
+		}
 		a.setCallStatus(id, "检测到来电", "提示音已预热，即将自动接听", false)
 		if !waitForCall(ctx, callPromptWarmLead) {
 			return
@@ -979,6 +988,7 @@ func (a *app) processIncomingCall(id uint64, ctx context.Context) {
 	}
 	number := a.currentCallNumber(id)
 	if !numberAllowed(number, config.Calls.AllowedNumbers) {
+		a.stopWarmedModuleVoiceRoute(voiceRouteWarmup)
 		a.setCallStatus(id, "来电未接听", "号码不在白名单中", false)
 		return
 	}
@@ -986,20 +996,22 @@ func (a *app) processIncomingCall(id uint64, ctx context.Context) {
 		modulePromptReady = a.prepareModulePrompt(config.Calls)
 	}
 	if !a.claimCallWorkflow(id) {
+		a.stopWarmedModuleVoiceRoute(voiceRouteWarmup)
 		return
 	}
 	log.Printf("answering incoming call from %s", displayCallNumber(number))
 	if err := a.answerCall(); err != nil {
+		a.stopWarmedModuleVoiceRoute(voiceRouteWarmup)
 		a.releaseCallWorkflow(id)
 		a.setCallStatus(id, "接听失败", err.Error(), false)
 		log.Printf("incoming call answer failed: %v", err)
 		return
 	}
 	log.Printf("incoming call answered")
-	a.runAnsweredCallWorkflow(id, ctx, config, modulePromptReady)
+	a.runAnsweredCallWorkflow(id, ctx, config, modulePromptReady, voiceRouteWarmup)
 }
 
-func (a *app) runAnsweredCallWorkflow(id uint64, ctx context.Context, config automationConfig, modulePromptReady bool) {
+func (a *app) runAnsweredCallWorkflow(id uint64, ctx context.Context, config automationConfig, modulePromptReady bool, voiceRouteWarmup <-chan moduleVoiceRouteWarmup) {
 	number := a.currentCallNumber(id)
 	// On Linux the caller-facing UAC route is hosted inside the QDC507. It is
 	// intentionally started only after ATA has connected the call. The public
@@ -1012,10 +1024,15 @@ func (a *app) runAnsweredCallWorkflow(id uint64, ctx context.Context, config aut
 		}
 		if runtime.GOOS == "linux" {
 			var err error
-			routeStarted, err = a.startModuleVoiceRoute(ctx)
+			routeStarted, err = a.awaitModuleVoiceRoute(ctx, voiceRouteWarmup)
 			if err != nil {
 				log.Printf("module caller-audio route did not start: %v", err)
-			} else if !waitForCall(ctx, 1200*time.Millisecond) {
+			}
+			settleDelay := 1200 * time.Millisecond
+			if voiceRouteWarmup != nil {
+				settleDelay = 500 * time.Millisecond
+			}
+			if routeStarted && !waitForCall(ctx, settleDelay) {
 				return
 			}
 		} else {
@@ -1125,6 +1142,49 @@ func (a *app) prewarmCallPrompt(config callAutomationConfig) {
 		return
 	}
 	log.Printf("call prompt prewarmed")
+}
+
+func (a *app) prewarmModuleVoiceRoute(ctx context.Context) <-chan moduleVoiceRouteWarmup {
+	result := make(chan moduleVoiceRouteWarmup, 1)
+	go func() {
+		started, err := a.startModuleVoiceRoute(ctx)
+		if started && ctx.Err() != nil {
+			_ = a.stopModuleVoiceRoute()
+			return
+		}
+		select {
+		case result <- moduleVoiceRouteWarmup{started: started, err: err}:
+		case <-ctx.Done():
+			if started {
+				_ = a.stopModuleVoiceRoute()
+			}
+		}
+	}()
+	return result
+}
+
+func (a *app) awaitModuleVoiceRoute(ctx context.Context, warmup <-chan moduleVoiceRouteWarmup) (bool, error) {
+	if warmup == nil {
+		return a.startModuleVoiceRoute(ctx)
+	}
+	select {
+	case result := <-warmup:
+		return result.started, result.err
+	case <-ctx.Done():
+		return false, context.Canceled
+	}
+}
+
+func (a *app) stopWarmedModuleVoiceRoute(warmup <-chan moduleVoiceRouteWarmup) {
+	if warmup == nil {
+		return
+	}
+	go func() {
+		result := <-warmup
+		if result.started {
+			_ = a.stopModuleVoiceRoute()
+		}
+	}()
 }
 
 func (a *app) prepareModulePrompt(config callAutomationConfig) bool {
@@ -1466,7 +1526,9 @@ func (a *app) startHostCallRecording(id uint64, parent context.Context, config c
 		return fmt.Errorf("host recorder unavailable: %w", err)
 	}
 	recordContext, cancel := context.WithCancel(parent)
-	recorderArgs := []string{rawPath, "120"}
+	// A caller-controlled voicemail has no arbitrary duration cap. The
+	// recorder is stopped by the active-call context as soon as the call ends.
+	recorderArgs := []string{rawPath, "0"}
 	if runtime.GOOS == "linux" {
 		captureDevice := config.USBAudioCaptureDevice
 		if captureDevice == "" {

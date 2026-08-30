@@ -213,6 +213,13 @@ func TestCallPromptWarmDelay(t *testing.T) {
 	}
 }
 
+func TestCallPromptWarmDelayUsesConfiguredLead(t *testing.T) {
+	warmDelay, ok := callPromptWarmDelay(5 * time.Second)
+	if !ok || warmDelay != 3*time.Second {
+		t.Fatalf("callPromptWarmDelay(5s) = %v, %v; want 3s, true", warmDelay, ok)
+	}
+}
+
 func TestAutomationAPIFilePromptSourcePreservesPreparedAudio(t *testing.T) {
 	instance := &app{automationPath: filepath.Join(t.TempDir(), "automation.json")}
 	incoming := automationConfig{
