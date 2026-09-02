@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 func TestPortScore(t *testing.T) {
 	tests := []struct {
@@ -106,5 +109,26 @@ func TestInitUSBATESIMManagerAfterDelayedUSBOpen(t *testing.T) {
 	managerAgain, _ := instance.currentESIMManager()
 	if managerAgain != manager {
 		t.Fatal("repeated USB AT recovery replaced the existing eSIM manager")
+	}
+}
+
+func TestIsUSBATGoneError(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "nil", err: nil, want: false},
+		{name: "libusb no device", err: errors.New("USB bulk write: NO_DEVICE"), want: true},
+		{name: "linux unplug wording", err: errors.New("USB bulk write: no such device"), want: true},
+		{name: "device not found", err: errors.New("USB device NOT_FOUND"), want: true},
+		{name: "AT timeout", err: errors.New("USB AT command timed out without response"), want: true},
+		{name: "ordinary modem error", err: errors.New("AT+CMGF returned ERROR"), want: false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isUSBATGoneError(tt.err); got != tt.want {
+				t.Fatalf("isUSBATGoneError(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
 	}
 }

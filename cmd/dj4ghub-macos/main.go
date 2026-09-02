@@ -729,16 +729,24 @@ func (a *app) ensureUSBAT() error {
 }
 
 func (a *app) resetUSBATIfGone(err error) {
-	if err == nil || a.usbAT == nil {
-		return
-	}
-	text := strings.ToUpper(err.Error())
-	if !strings.Contains(text, "NO_DEVICE") &&
-		!strings.Contains(text, "NOT_FOUND") &&
-		!strings.Contains(text, "USB AT COMMAND TIMED OUT") {
+	if a.usbAT == nil || !isUSBATGoneError(err) {
 		return
 	}
 	a.markUSBATDetached(err.Error())
+}
+
+// isUSBATGoneError recognises both libusb's symbolic errors and Linux's
+// usbdevfs wording. The latter is emitted after a physical unplug as
+// "USB bulk write: no such device" and must trigger a fresh enumeration.
+func isUSBATGoneError(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToUpper(err.Error())
+	return strings.Contains(text, "NO_DEVICE") ||
+		strings.Contains(text, "NO SUCH DEVICE") ||
+		strings.Contains(text, "NOT_FOUND") ||
+		strings.Contains(text, "USB AT COMMAND TIMED OUT")
 }
 
 // markUSBATDetached clears state belonging to a physically removed module.
