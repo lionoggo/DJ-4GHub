@@ -1,5 +1,10 @@
 const $ = (selector) => document.querySelector(selector);
 let lastSMSCount = null;
+let cachedSMS = [];
+let replyTarget = null;
+let manualSMSDraft = { phone: "", message: "" };
+const replyDrafts = new Map();
+const repliedSMSKeys = new Set();
 let esimHealthPollTimer = null;
 let esimHealthInFlight = false;
 let networkTrafficTimer = null;
@@ -300,8 +305,171 @@ async function loadStatus() {
   }
 }
 
-async function loadSMS() {
+function smsKey(message) {
+  return [message.sender || "", message.timestamp || "", message.content || ""].join("\u001f");
+}
+
+function replyDestination(sender) {
+  const normalized = String(sender || "").trim().replace(/[\s-]/g, "");
+  return /^\+?\d{3,20}$/.test(normalized) ? normalized : "";
+}
+
+function updateComposerMode({ focus = false } = {}) {
+  const panel = $("#compose-panel");
+  const title = $("#compose-title");
+  const hint = $("#compose-hint");
+  const icon = $("#compose-icon");
+  const cancel = $("#cancel-reply");
+  const phone = $("#phone");
+  const recipientLabel = $("#recipient-label");
+  const sendButton = $("#send-form button[type=submit]");
+  const sendLabel = sendButton.querySelector(".composer-send-label");
+  const isReply = Boolean(replyTarget);
+  const replyable = replyTarget?.replyable !== false;
+
+  panel.classList.toggle("is-reply", isReply && replyable);
+  panel.classList.toggle("is-reply-unavailable", isReply && !replyable);
+  cancel.hidden = !isReply;
+  phone.readOnly = isReply;
+  messageInput.disabled = isReply && !replyable;
+  sendButton.disabled = isReply && !replyable;
+
+  if (isReply) {
+    phone.value = replyTarget.destination || replyTarget.sender;
+    recipientLabel.textContent = replyable ? "回复对象" : "不可回复";
+    title.textContent = replyable ? `回复 ${replyTarget.sender}` : `查看 ${replyTarget.sender}`;
+    hint.textContent = replyable ? "号码已锁定 · 发送后保留选中项" : "该发件人不是可回复的数字号码";
+    icon.textContent = replyable ? "↩" : "—";
+    sendLabel.textContent = replyable ? "回复" : "发送";
+    sendButton.setAttribute("aria-label", replyable ? "回复短信" : "当前短信无法回复");
+    messageInput.placeholder = replyable ? "输入回复内容…" : "此短信来自字母签名，无法直接回复";
+    messageInput.value = replyable ? (replyDrafts.get(replyTarget.key) || "") : "";
+  } else {
+    phone.value = manualSMSDraft.phone;
+    recipientLabel.textContent = "收件人";
+    title.textContent = "新消息";
+    hint.textContent = "支持长短信自动分片";
+    icon.textContent = "＋";
+    sendLabel.textContent = "发送";
+    sendButton.setAttribute("aria-label", "发送短信");
+    messageInput.placeholder = "输入短信内容…";
+    messageInput.value = manualSMSDraft.message;
+  }
+  updateMessageCounter();
+  if (focus && replyable) requestAnimationFrame(() => messageInput.focus());
+}
+
+async function selectSMSForReply(message) {
+  const key = smsKey(message);
+  if (replyTarget?.key === key) {
+    if (replyTarget.replyable) messageInput.focus();
+    return;
+  }
+
+  const hasDraft = replyTarget
+    ? Boolean(messageInput.value.trim())
+    : Boolean($("#phone").value.trim() || messageInput.value.trim());
+  if (hasDraft) {
+    const result = await showModal({
+      title: "切换回复对象？",
+      message: "当前未发送内容会保留为草稿，切换后不会丢失。",
+      confirmLabel: "切换",
+    });
+    if (!result) return;
+  }
+
+  if (replyTarget) replyDrafts.set(replyTarget.key, messageInput.value);
+  else manualSMSDraft = { phone: $("#phone").value, message: messageInput.value };
+  const destination = replyDestination(message.sender);
+  replyTarget = {
+    key,
+    sender: message.sender || "未知号码",
+    destination,
+    replyable: Boolean(destination),
+  };
+  updateComposerMode({ focus: true });
+  renderSMSList(cachedSMS);
+}
+
+function cancelReply() {
+  if (!replyTarget) return;
+  if (replyTarget.replyable && messageInput.value) replyDrafts.set(replyTarget.key, messageInput.value);
+  replyTarget = null;
+  updateComposerMode();
+  renderSMSList(cachedSMS);
+}
+
+function renderSMSList(messages) {
   const list = $("#sms-list");
+  if (!messages.length) {
+    list.className = "list empty";
+    list.textContent = "暂无短信";
+    return;
+  }
+  list.className = "list";
+  list.replaceChildren(...messages.map((message) => {
+    const key = smsKey(message);
+    const isSelected = replyTarget?.key === key;
+    const row = document.createElement("article");
+    row.className = `item sms-item${isSelected ? " is-selected" : ""}`;
+    row.tabIndex = 0;
+    row.setAttribute("role", "button");
+    row.setAttribute("aria-pressed", String(isSelected));
+    row.setAttribute("aria-label", `回复来自 ${message.sender || "未知号码"} 的短信`);
+
+    const sender = document.createElement("strong");
+    sender.textContent = message.sender || "未知号码";
+    const content = document.createElement("p");
+    content.textContent = message.content;
+    const actions = document.createElement("div");
+    actions.className = "sms-actions";
+    if (message.code) {
+      const badge = document.createElement("span");
+      badge.className = "code-badge";
+      badge.textContent = `验证码 ${message.code}`;
+      const copy = document.createElement("button");
+      copy.className = "secondary compact";
+      copy.type = "button";
+      copy.textContent = "复制";
+      copy.addEventListener("click", (event) => {
+        event.stopPropagation();
+        copySMSCode(message.code);
+      });
+      actions.append(badge, copy);
+    }
+    const reply = document.createElement("button");
+    const replyable = Boolean(replyDestination(message.sender));
+    reply.className = "secondary compact sms-reply-button";
+    reply.type = "button";
+    reply.textContent = replyable ? "回复" : "不可回复";
+    reply.disabled = !replyable;
+    reply.addEventListener("click", (event) => {
+      event.stopPropagation();
+      selectSMSForReply(message);
+    });
+    const time = document.createElement("time");
+    time.textContent = new Date(message.timestamp).toLocaleString();
+    actions.append(reply);
+    if (repliedSMSKeys.has(key)) {
+      const state = document.createElement("span");
+      state.className = "sms-reply-state";
+      state.textContent = "已回复";
+      actions.append(state);
+    }
+    actions.append(time);
+    row.append(sender, content, actions);
+    row.addEventListener("click", () => selectSMSForReply(message));
+    row.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        selectSMSForReply(message);
+      }
+    });
+    return row;
+  }));
+}
+
+async function loadSMS() {
   try {
     const [messages, status] = await Promise.all([
       api("/api/sms"),
@@ -317,39 +485,8 @@ async function loadSMS() {
       notice(`收到 ${messages.length - lastSMSCount} 条新短信`);
     }
     lastSMSCount = messages.length;
-    if (!messages.length) {
-      list.className = "list empty";
-      list.textContent = "暂无短信";
-      return;
-    }
-    list.className = "list";
-    list.replaceChildren(...messages.map((message) => {
-      const row = document.createElement("article");
-      row.className = "item";
-      const sender = document.createElement("strong");
-      sender.textContent = message.sender || "未知号码";
-      const content = document.createElement("p");
-      content.textContent = message.content;
-      const time = document.createElement("time");
-      time.textContent = new Date(message.timestamp).toLocaleString();
-      if (message.code) {
-        const actions = document.createElement("div");
-        actions.className = "sms-actions";
-        const badge = document.createElement("span");
-        badge.className = "code-badge";
-        badge.textContent = `验证码 ${message.code}`;
-        const copy = document.createElement("button");
-        copy.className = "secondary compact";
-        copy.type = "button";
-        copy.textContent = "复制";
-        copy.addEventListener("click", () => copySMSCode(message.code));
-        actions.append(badge, copy, time);
-        row.append(sender, content, actions);
-      } else {
-        row.append(sender, content, time);
-      }
-      return row;
-    }));
+    cachedSMS = messages;
+    renderSMSList(messages);
   } catch (error) {
     $("#sms-status").textContent = `读取列表失败：${error.message}`;
     notice(error.message);
@@ -1680,15 +1817,26 @@ const messageCounter = $("#message-counter");
 const updateMessageCounter = () => {
   messageCounter.textContent = `${messageInput.value.length} 字 · 自动分片`;
 };
-messageInput.addEventListener("input", updateMessageCounter);
+messageInput.addEventListener("input", () => {
+  updateMessageCounter();
+  if (replyTarget?.replyable) replyDrafts.set(replyTarget.key, messageInput.value);
+  else if (!replyTarget) manualSMSDraft.message = messageInput.value;
+});
+$("#phone").addEventListener("input", () => {
+  if (!replyTarget) manualSMSDraft.phone = $("#phone").value;
+});
+$("#cancel-reply").addEventListener("click", cancelReply);
 updateMessageCounter();
 
 $("#send-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   const button = event.submitter;
-  const originalLabel = button.textContent;
+  const label = button.querySelector(".composer-send-label");
+  const originalLabel = label.textContent;
+  const target = replyTarget;
+  if (target && !target.replyable) return;
   button.disabled = true;
-  button.textContent = "发送中";
+  label.textContent = target ? "回复中" : "发送中";
   try {
     const result = await api("/api/sms/send", {
       method: "POST",
@@ -1697,12 +1845,20 @@ $("#send-form").addEventListener("submit", async (event) => {
     messageInput.value = "";
     updateMessageCounter();
     const segments = Number(result.segments || 1);
-    notice(segments > 1 ? `短信已发送（${segments} 个分片）` : "短信已发送");
+    if (target) {
+      replyDrafts.delete(target.key);
+      repliedSMSKeys.add(target.key);
+      renderSMSList(cachedSMS);
+      notice(segments > 1 ? `已回复（${segments} 个分片）` : "已回复");
+    } else {
+      manualSMSDraft.message = "";
+      notice(segments > 1 ? `短信已发送（${segments} 个分片）` : "短信已发送");
+    }
   } catch (error) {
     notice(error.message);
   } finally {
     button.disabled = false;
-    button.textContent = originalLabel;
+    label.textContent = originalLabel;
   }
 });
 

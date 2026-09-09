@@ -157,11 +157,14 @@
           <div><span class="section-kicker">MESSAGES</span><h2>短信</h2><p>读取 SIM 与模块存储，验证码会自动识别。</p></div>
           <div class="view-meta"><span>自动轮询</span><strong>5s</strong></div>
         </div>
-        <div class="surface-panel compose-panel">
-          <div class="panel-heading"><div><span class="panel-icon" aria-hidden="true">＋</span><strong>新消息</strong></div><small>支持长短信自动分片</small></div>
+        <div id="compose-panel" class="surface-panel compose-panel">
+          <div class="panel-heading">
+            <div><span id="compose-icon" class="panel-icon" aria-hidden="true">＋</span><strong id="compose-title">新消息</strong></div>
+            <div class="compose-heading-actions"><small id="compose-hint">支持长短信自动分片</small><button id="cancel-reply" class="secondary compact reply-cancel" type="button" hidden>取消回复</button></div>
+          </div>
           <form id="send-form" class="message-composer">
             <label class="recipient-field" for="phone">
-              <span>收件人</span>
+              <span id="recipient-label">收件人</span>
               <input id="phone" type="tel" placeholder="输入手机号" autocomplete="tel" required>
             </label>
             <label class="message-field" for="message">

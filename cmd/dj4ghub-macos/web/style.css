@@ -297,6 +297,15 @@ button:active:not(:disabled) { transform: translateY(1px); }
 .panel-heading strong, .fold-panel summary strong { color: var(--text-default); font-size: 11px; font-weight: 550; }
 .panel-heading small, .fold-panel summary small { color: var(--dim); font-size: 9px; font-weight: 400; }
 .panel-icon { display: inline-grid; width: 20px; height: 20px; place-items: center; border-radius: 6px; background: var(--surface-active); color: var(--accent); font-size: 11px; font-style: normal; }
+.compose-heading-actions { display: flex; flex: none; align-items: center; gap: 8px; }
+.reply-cancel { min-height: 26px; padding: 0 8px; font-size: 9px; }
+.compose-panel.is-reply .panel-icon { background: var(--accent-soft); color: var(--accent); }
+.compose-panel.is-reply .message-composer { border-color: color-mix(in srgb, var(--accent) 40%, var(--line)); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 6%, transparent); }
+.compose-panel.is-reply .recipient-field { background: color-mix(in srgb, var(--accent-soft) 44%, transparent); }
+.compose-panel.is-reply .recipient-field input[readonly] { color: var(--accent); cursor: default; font-variant-numeric: tabular-nums; }
+.compose-panel.is-reply-unavailable .panel-icon { background: var(--surface-active); color: var(--dim); }
+.compose-panel.is-reply-unavailable .message-composer { border-style: dashed; }
+.message-field textarea:disabled { cursor: not-allowed; color: var(--dim); }
 
 .sr-only { position: absolute !important; width: 1px !important; height: 1px !important; margin: -1px !important; overflow: hidden !important; clip: rect(0, 0, 0, 0) !important; white-space: nowrap !important; }
 .message-composer { overflow: hidden; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); transition: border-color 140ms ease, box-shadow 140ms ease; }
@@ -330,14 +339,20 @@ input:focus { border-color: color-mix(in srgb, var(--accent) 50%, var(--line)); 
 
 .list { overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface); }
 .list.empty { display: grid; min-height: 100px; place-items: center; padding: 24px; color: var(--dim); font-size: 10px; text-align: center; }
-.item { display: grid; grid-template-columns: minmax(120px, 170px) 1fr auto; align-items: center; gap: 18px; min-height: 64px; padding: 12px 14px; border-bottom: 1px solid var(--line); transition: background 120ms ease; }
+.item { display: grid; grid-template-columns: minmax(120px, 170px) 1fr auto; align-items: center; gap: 18px; min-height: 64px; padding: 12px 14px; border-bottom: 1px solid var(--line); transition: background 120ms ease, box-shadow 120ms ease; }
 .item:last-child { border-bottom: 0; }
 .item:hover { background: color-mix(in srgb, var(--text) 2.5%, transparent); }
+.sms-item { cursor: pointer; }
+.sms-item:focus-visible { position: relative; z-index: 1; outline: 2px solid color-mix(in srgb, var(--accent) 70%, transparent); outline-offset: -2px; }
+.sms-item.is-selected { background: color-mix(in srgb, var(--accent-soft) 78%, var(--surface)); box-shadow: inset 3px 0 0 var(--accent); }
 .item > strong { color: var(--text-default); font-size: 11px; font-weight: 550; overflow-wrap: anywhere; }
 .item p { margin: 0; color: var(--muted); font-size: 10px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
 .item time, .item small { color: var(--dim); font-size: 9px; font-variant-numeric: tabular-nums; }
 .sms-actions, .profile-actions { justify-content: flex-end; flex-wrap: wrap; }
 .code-badge { border-radius: 999px; padding: 4px 7px; background: var(--positive-soft); color: var(--positive); font-size: 9px; font-weight: 600; white-space: nowrap; }
+.sms-reply-button { min-height: 25px; padding: 0 8px; font-size: 9px; }
+.sms-reply-button:disabled { cursor: not-allowed; opacity: .48; }
+.sms-reply-state { border-radius: 999px; padding: 4px 7px; background: var(--accent-soft); color: var(--accent); font-size: 9px; font-weight: 600; white-space: nowrap; }
 
 .diagnostic-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
 .diagnostic-card { min-height: 94px; border: 1px solid var(--hairline); border-radius: var(--radius-md); padding: 13px; background: var(--surface); }
@@ -703,6 +718,8 @@ body.modal-open { overflow: hidden; }
   .view-intro > button, .view-intro > .risk-badge { align-self: flex-start; }
   .view-meta { display: none; }
   .heading-actions { flex-wrap: wrap; }
+  .compose-heading-actions { max-width: 60%; justify-content: flex-end; }
+  .compose-heading-actions small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .item { grid-template-columns: 1fr; gap: 6px; }
   .sms-actions, .profile-actions { justify-content: flex-start; }
   .diagnostic-grid, .fold-panel > #esim-runtime { grid-template-columns: 1fr; }
