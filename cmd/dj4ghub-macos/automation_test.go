@@ -286,6 +286,84 @@ func TestSendFeishuAudioMessage(t *testing.T) {
 	}
 }
 
+func TestSendFeishuCallRecordingDeliversCallerMetadataBeforeAudio(t *testing.T) {
+	opusPath := filepath.Join(t.TempDir(), "call.opus")
+	if err := os.WriteFile(opusPath, []byte("opus-recording"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	metadata := "【DJ 4G Hub】来电录音\n号码：13800138000\n录制时间：2026-10-02 12:34:56"
+	var events []string
+	tokenRequests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/open-apis/auth/v3/tenant_access_token/internal":
+			tokenRequests++
+			events = append(events, "token")
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "tenant_access_token": "tenant-token"})
+		case "/open-apis/im/v1/files":
+			if got := r.Header.Get("Authorization"); got != "Bearer tenant-token" {
+				t.Fatalf("upload Authorization = %q", got)
+			}
+			if err := r.ParseMultipartForm(1 << 20); err != nil {
+				t.Fatalf("ParseMultipartForm() error = %v", err)
+			}
+			if got := r.FormValue("file_type"); got != "opus" {
+				t.Fatalf("file_type = %q, want opus", got)
+			}
+			events = append(events, "upload")
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]string{"file_key": "file-test"}})
+		case "/open-apis/im/v1/messages":
+			if got := r.Header.Get("Authorization"); got != "Bearer tenant-token" {
+				t.Fatalf("message Authorization = %q", got)
+			}
+			var payload map[string]string
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode message: %v", err)
+			}
+			switch payload["msg_type"] {
+			case "text":
+				var content map[string]string
+				if err := json.Unmarshal([]byte(payload["content"]), &content); err != nil {
+					t.Fatalf("decode text content: %v", err)
+				}
+				if content["text"] != metadata {
+					t.Fatalf("metadata = %q", content["text"])
+				}
+				events = append(events, "metadata")
+			case "audio":
+				if payload["content"] != `{"duration":1250,"file_key":"file-test"}` {
+					t.Fatalf("audio content = %q", payload["content"])
+				}
+				events = append(events, "audio")
+			default:
+				t.Fatalf("unexpected message type %q", payload["msg_type"])
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0})
+		default:
+			t.Fatalf("unexpected request path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	config := feishuForwardConfig{
+		Mode:            feishuModeAppBot,
+		AppID:           "cli_test",
+		AppSecret:       "app-secret",
+		RecipientIDType: "email",
+		RecipientID:     "receiver@example.com",
+		APIBaseURL:      server.URL,
+	}
+	if err := sendFeishuCallRecording(context.Background(), config, opusPath, 1250, metadata); err != nil {
+		t.Fatalf("sendFeishuCallRecording() error = %v", err)
+	}
+	if tokenRequests != 1 {
+		t.Fatalf("tenant token requests = %d, want 1", tokenRequests)
+	}
+	if got, want := strings.Join(events, ","), "token,metadata,upload,audio"; got != want {
+		t.Fatalf("Feishu request order = %q, want %q", got, want)
+	}
+}
+
 func TestWAVDurationMS(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "one-second.wav")
 	if err := writePCM16MonoWAV(path, make([]byte, 16000), 8000); err != nil {

@@ -940,6 +940,10 @@ func sendFeishuAppBotMessage(ctx context.Context, config feishuForwardConfig, te
 	if err != nil {
 		return err
 	}
+	return sendFeishuAppBotMessageWithAccessToken(ctx, config, accessToken, text)
+}
+
+func sendFeishuAppBotMessageWithAccessToken(ctx context.Context, config feishuForwardConfig, accessToken, text string) error {
 	content, err := json.Marshal(map[string]string{"text": text})
 	if err != nil {
 		return fmt.Errorf("encode Feishu text message: %w", err)
@@ -961,6 +965,10 @@ func sendFeishuAudioMessage(ctx context.Context, config feishuForwardConfig, pat
 	if err != nil {
 		return err
 	}
+	return sendFeishuAudioMessageWithAccessToken(ctx, config, accessToken, path, durationMS)
+}
+
+func sendFeishuAudioMessageWithAccessToken(ctx context.Context, config feishuForwardConfig, accessToken, path string, durationMS int64) error {
 	fileKey, err := uploadFeishuAudio(ctx, config, accessToken, path, durationMS)
 	if err != nil {
 		return err
@@ -976,6 +984,25 @@ func sendFeishuAudioMessage(ctx context.Context, config feishuForwardConfig, pat
 		"content":    string(content),
 	}
 	return postFeishuJSONWithRetry(ctx, endpoint, payload, map[string]string{"Authorization": "Bearer " + accessToken})
+}
+
+// sendFeishuCallRecording keeps a native Feishu audio bubble associated with
+// the caller it belongs to. Feishu audio messages have no caption field, so a
+// text message is deliberately delivered first, followed by the audio message.
+// One tenant token is reused for this ordered pair to avoid a second token
+// request between the metadata and its recording.
+func sendFeishuCallRecording(ctx context.Context, config feishuForwardConfig, path string, durationMS int64, metadata string) error {
+	accessToken, err := fetchFeishuTenantAccessToken(ctx, config)
+	if err != nil {
+		return err
+	}
+	if err := sendFeishuAppBotMessageWithAccessToken(ctx, config, accessToken, metadata); err != nil {
+		return fmt.Errorf("send Feishu call metadata: %w", err)
+	}
+	if err := sendFeishuAudioMessageWithAccessToken(ctx, config, accessToken, path, durationMS); err != nil {
+		return fmt.Errorf("send Feishu call audio: %w", err)
+	}
+	return nil
 }
 
 func uploadFeishuAudio(ctx context.Context, config feishuForwardConfig, accessToken, path string, durationMS int64) (string, error) {
@@ -2057,12 +2084,12 @@ func (a *app) forwardCallRecording(path, number string, recordedAt time.Time, ca
 		return
 	}
 	defer cleanup()
-	if err := sendFeishuAudioMessage(forwardContext, config.SMS.Feishu, opusPath, durationMS); err != nil {
+	if err := sendFeishuCallRecording(forwardContext, config.SMS.Feishu, opusPath, durationMS, caption); err != nil {
 		log.Printf("Feishu call recording forwarding failed: %v", err)
 		return
 	}
 	a.markCallRecordingForwarded(callID, "feishu")
-	log.Printf("call recording forwarded to Feishu as native audio")
+	log.Printf("call recording forwarded to Feishu with caller metadata and native audio")
 }
 
 func transcodeRecordingToOpus(ctx context.Context, inputPath string) (string, int64, func(), error) {
