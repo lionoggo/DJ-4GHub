@@ -2184,6 +2184,8 @@ foundData:
 	var aboveThreshold int
 	var firstVoiceFrame uint64
 	remaining := uint64(dataSize)
+	const minVoiceRMS = 256
+	const sustainedVoiceFrames = 8
 	for remaining >= uint64(frameBytes) {
 		if _, err := io.ReadFull(input, frame); err != nil {
 			return "", noop, 0, fmt.Errorf("scan WAV audio: %w", err)
@@ -2194,24 +2196,26 @@ foundData:
 			energy += uint64(sample * sample)
 		}
 		meanSquare := energy / uint64(frameSamples)
-		const minVoiceRMS = 192
 		if meanSquare >= minVoiceRMS*minVoiceRMS {
 			aboveThreshold++
 		} else {
 			aboveThreshold = 0
 		}
-		if aboveThreshold == 2 {
-			firstVoiceFrame = frameIndex - 1
+		// Ignore isolated modem/audio-route transients. Require 160 ms of
+		// consecutive voice-level energy, then retain a 200 ms preroll so the
+		// initial consonant remains in the forwarded clip.
+		if aboveThreshold == sustainedVoiceFrames {
+			firstVoiceFrame = frameIndex - sustainedVoiceFrames + 1
 			break
 		}
 		frameIndex++
 		remaining -= uint64(frameBytes)
 	}
-	if aboveThreshold < 2 {
+	if aboveThreshold < sustainedVoiceFrames {
 		return inputPath, noop, 0, nil
 	}
 	voiceOnsetSample := firstVoiceFrame * uint64(frameSamples)
-	prerollSamples := uint64(sampleRate) * 60 / 1000
+	prerollSamples := uint64(sampleRate) * 200 / 1000
 	if voiceOnsetSample <= prerollSamples {
 		return inputPath, noop, 0, nil
 	}
