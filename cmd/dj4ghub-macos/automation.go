@@ -1950,10 +1950,14 @@ func writePCM16MonoWAV(path string, raw []byte, sampleRate uint32) error {
 	if len(raw) > int(^uint32(0))-36 {
 		return errors.New("WAV payload is too large")
 	}
-	const headerSize = 44
-	header := make([]byte, headerSize)
+	header := pcm16MonoWAVHeader(uint32(len(raw)), sampleRate)
+	return os.WriteFile(path, append(header, raw...), 0o600)
+}
+
+func pcm16MonoWAVHeader(dataSize, sampleRate uint32) []byte {
+	header := make([]byte, 44)
 	copy(header[0:4], "RIFF")
-	binary.LittleEndian.PutUint32(header[4:8], uint32(36+len(raw)))
+	binary.LittleEndian.PutUint32(header[4:8], 36+dataSize)
 	copy(header[8:16], "WAVEfmt ")
 	binary.LittleEndian.PutUint32(header[16:20], 16)
 	binary.LittleEndian.PutUint16(header[20:22], 1)
@@ -1963,8 +1967,8 @@ func writePCM16MonoWAV(path string, raw []byte, sampleRate uint32) error {
 	binary.LittleEndian.PutUint16(header[32:34], 2)
 	binary.LittleEndian.PutUint16(header[34:36], 16)
 	copy(header[36:40], "data")
-	binary.LittleEndian.PutUint32(header[40:44], uint32(len(raw)))
-	return os.WriteFile(path, append(header, raw...), 0o600)
+	binary.LittleEndian.PutUint32(header[40:44], dataSize)
+	return header
 }
 
 // normalizeLinuxPromptWAV converts the espeak-ng WAV output into the exact
@@ -2078,7 +2082,17 @@ func (a *app) forwardCallRecording(path, number string, recordedAt time.Time, ca
 	}
 	forwardContext, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	opusPath, durationMS, cleanup, err := transcodeRecordingToOpus(forwardContext, path)
+	feishuAudioPath, cleanupTrimmedAudio, trimmed, err := trimLeadingSilenceWAV(path)
+	if err != nil {
+		log.Printf("Feishu call recording silence trim skipped: %v", err)
+		feishuAudioPath = path
+		cleanupTrimmedAudio = func() {}
+	}
+	defer cleanupTrimmedAudio()
+	if trimmed > 0 {
+		log.Printf("trimmed %.2fs of leading silence from Feishu audio; the local WAV remains complete", trimmed.Seconds())
+	}
+	opusPath, durationMS, cleanup, err := transcodeRecordingToOpus(forwardContext, feishuAudioPath)
 	if err != nil {
 		log.Printf("Feishu call recording transcode failed: %v", err)
 		return
@@ -2090,6 +2104,153 @@ func (a *app) forwardCallRecording(path, number string, recordedAt time.Time, ca
 	}
 	a.markCallRecordingForwarded(callID, "feishu")
 	log.Printf("call recording forwarded to Feishu with caller metadata and native audio")
+}
+
+// trimLeadingSilenceWAV creates a temporary WAV for Feishu forwarding and
+// removes only leading quiet audio. The original local recording is untouched.
+// A short preroll is retained before voice onset to protect quiet consonants.
+func trimLeadingSilenceWAV(inputPath string) (string, func(), time.Duration, error) {
+	input, err := os.Open(inputPath)
+	if err != nil {
+		return "", nil, 0, fmt.Errorf("open WAV for silence scan: %w", err)
+	}
+	defer input.Close()
+	noop := func() {}
+	header := make([]byte, 12)
+	if _, err := io.ReadFull(input, header); err != nil {
+		return "", noop, 0, fmt.Errorf("read WAV header: %w", err)
+	}
+	if string(header[:4]) != "RIFF" || string(header[8:12]) != "WAVE" {
+		return inputPath, noop, 0, nil
+	}
+	var formatTag, channels, bitsPerSample uint16
+	var sampleRate uint32
+	var dataOffset int64
+	var dataSize uint32
+	for {
+		chunk := make([]byte, 8)
+		if _, err := io.ReadFull(input, chunk); err != nil {
+			return "", noop, 0, fmt.Errorf("scan WAV chunks: %w", err)
+		}
+		size := binary.LittleEndian.Uint32(chunk[4:8])
+		switch string(chunk[:4]) {
+		case "fmt ":
+			if size < 16 {
+				return "", noop, 0, errors.New("WAV format chunk is invalid")
+			}
+			format := make([]byte, 16)
+			if _, err := io.ReadFull(input, format); err != nil {
+				return "", noop, 0, err
+			}
+			formatTag = binary.LittleEndian.Uint16(format[0:2])
+			channels = binary.LittleEndian.Uint16(format[2:4])
+			sampleRate = binary.LittleEndian.Uint32(format[4:8])
+			bitsPerSample = binary.LittleEndian.Uint16(format[14:16])
+			if remaining := int64(size) - int64(len(format)); remaining > 0 {
+				if _, err := input.Seek(remaining, io.SeekCurrent); err != nil {
+					return "", noop, 0, err
+				}
+			}
+		case "data":
+			dataOffset, err = input.Seek(0, io.SeekCurrent)
+			if err != nil {
+				return "", noop, 0, err
+			}
+			dataSize = size
+			goto foundData
+		default:
+			if _, err := input.Seek(int64(size), io.SeekCurrent); err != nil {
+				return "", noop, 0, err
+			}
+		}
+		if size%2 != 0 {
+			if _, err := input.Seek(1, io.SeekCurrent); err != nil {
+				return "", noop, 0, err
+			}
+		}
+	}
+
+foundData:
+	if formatTag != 1 || channels != 1 || bitsPerSample != 16 || sampleRate < 1000 || dataSize < 4 {
+		return inputPath, noop, 0, nil
+	}
+	frameSamples := sampleRate / 50 // 20 ms windows
+	if frameSamples == 0 {
+		return inputPath, noop, 0, nil
+	}
+	frameBytes := int(frameSamples * 2)
+	frame := make([]byte, frameBytes)
+	var frameIndex uint64
+	var aboveThreshold int
+	var firstVoiceFrame uint64
+	remaining := uint64(dataSize)
+	for remaining >= uint64(frameBytes) {
+		if _, err := io.ReadFull(input, frame); err != nil {
+			return "", noop, 0, fmt.Errorf("scan WAV audio: %w", err)
+		}
+		var energy uint64
+		for offset := 0; offset+1 < len(frame); offset += 2 {
+			sample := int64(int16(binary.LittleEndian.Uint16(frame[offset : offset+2])))
+			energy += uint64(sample * sample)
+		}
+		meanSquare := energy / uint64(frameSamples)
+		const minVoiceRMS = 192
+		if meanSquare >= minVoiceRMS*minVoiceRMS {
+			aboveThreshold++
+		} else {
+			aboveThreshold = 0
+		}
+		if aboveThreshold == 2 {
+			firstVoiceFrame = frameIndex - 1
+			break
+		}
+		frameIndex++
+		remaining -= uint64(frameBytes)
+	}
+	if aboveThreshold < 2 {
+		return inputPath, noop, 0, nil
+	}
+	voiceOnsetSample := firstVoiceFrame * uint64(frameSamples)
+	prerollSamples := uint64(sampleRate) * 60 / 1000
+	if voiceOnsetSample <= prerollSamples {
+		return inputPath, noop, 0, nil
+	}
+	trimSamples := voiceOnsetSample - prerollSamples
+	trimBytes := trimSamples * 2
+	if trimBytes >= uint64(dataSize) {
+		return inputPath, noop, 0, nil
+	}
+	remainingAudioBytes := uint64(dataSize) - trimBytes
+	if remainingAudioBytes > uint64(^uint32(0)-36) {
+		return inputPath, noop, 0, nil
+	}
+	trimmedPath, err := os.CreateTemp(filepath.Dir(inputPath), ".dj4ghub-feishu-trimmed-*.wav")
+	if err != nil {
+		return "", noop, 0, fmt.Errorf("create trimmed WAV: %w", err)
+	}
+	trimmedName := trimmedPath.Name()
+	cleanup := func() { _ = os.Remove(trimmedName) }
+	if _, err := trimmedPath.Write(pcm16MonoWAVHeader(uint32(remainingAudioBytes), sampleRate)); err != nil {
+		trimmedPath.Close()
+		cleanup()
+		return "", noop, 0, fmt.Errorf("write trimmed WAV header: %w", err)
+	}
+	if _, err := input.Seek(dataOffset+int64(trimBytes), io.SeekStart); err != nil {
+		trimmedPath.Close()
+		cleanup()
+		return "", noop, 0, err
+	}
+	if _, err := io.CopyN(trimmedPath, input, int64(remainingAudioBytes)); err != nil {
+		trimmedPath.Close()
+		cleanup()
+		return "", noop, 0, fmt.Errorf("write trimmed WAV audio: %w", err)
+	}
+	if err := trimmedPath.Close(); err != nil {
+		cleanup()
+		return "", noop, 0, err
+	}
+	trimmed := time.Duration(trimSamples) * time.Second / time.Duration(sampleRate)
+	return trimmedName, cleanup, trimmed, nil
 }
 
 func transcodeRecordingToOpus(ctx context.Context, inputPath string) (string, int64, func(), error) {
